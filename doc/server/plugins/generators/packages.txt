@@ -51,7 +51,7 @@ member clients.
 | Yum    | yum      |              |
 +--------+----------+--------------+
 
-.. note:: 
+.. note::
 
    .. versionadded:: 1.2.0
 
@@ -158,9 +158,11 @@ Handling GPG Keys
 
 .. versionadded:: 1.2.0
 
-Packages can automatically handle GPG signing keys for Yum and Pulp
-repositories. Simply specify the URL to the GPG key(s) for a
-repository in ``sources.xml``::
+If you have yum libraries installed, Packages can automatically handle
+GPG signing keys for Yum and Pulp repositories. (You do not need to
+use the native yum resolver; if yum libraries are available, GPG
+signing keys can be handled automatically.)  Simply specify the URL to
+the GPG key(s) for a repository in ``sources.xml``::
 
     <Source type="yum"
             rawurl="http://mirror.example.com/centos6-x86_64/RPMS.os">
@@ -203,14 +205,13 @@ something like this::
 
     .. versionadded:: 1.1.0
 
-    The default behavior of the Packages plugin is to not make
-    any assumptions about which packages you want to have added
-    automatically. For that reason, neither **Recommended** nor
-    **Suggested** packages are added as dependencies by default. You
-    will notice that the default behavior for apt is to add Recommended
-    packages as dependencies. You can configure the Packages plugin to
-    add recommended packages by adding the ``recommended`` attribute,
-    e.g.:
+    The default behavior of the Packages plugin is to not make any
+    assumptions about which packages you want to have added automatically
+    [#f1]_. For that reason, neither **Recommended** nor **Suggested**
+    packages are added as dependencies by default. You will notice
+    that the default behavior for apt is to add Recommended packages as
+    dependencies. You can configure the Packages plugin to add recommended
+    packages by adding the ``recommended`` attribute, e.g.:
 
     .. code-block:: xml
 
@@ -218,6 +219,14 @@ something like this::
 
     .. warning:: You must regenerate the Packages cache when adding or
                  removing the recommended attribute.
+
+    .. [#f1] Bcfg2 will by default add **Essential** packages to the
+             client specification. You can disable this behavior by
+             setting the ``essential`` attribute to *false*:
+
+    .. code-block:: xml
+
+        <Source type="apt" essential="false" ...>
 
 Yum sources can be similarly specified::
 
@@ -565,7 +574,7 @@ You can also view the sources applicable to a client::
       Type: yum
       URL: http://mirror.example.com/centos-6-x86_64-updates
       GPG Key(s): http://mirror.example.com/centos-6-x86_64-updates/RPM-GPG-KEY-CentOS-6
-    
+
     Name: centos-6-x86_64-os
       Type: yum
       URL: http://mirror.example.com/centos-6-x86_64-os
@@ -660,17 +669,8 @@ It understands the following directives:
 * ``gpg_keypath``: The path on the client RPM GPG keys will be copied
   to before they are imported on the client.  Default is
   "/etc/pki/rpm-gpg".
-* ``import_gpg_keys``: The RPM release of an RPM GPG key cannot be
-  reliably and automatically determined without importing the key into
-  the server's key chain.  If ``import_gpg_keys`` is "false" (the
-  default), the release of automatically-generated RPM GPG key entries
-  in the specification will be set to "any", which disables
-  verification of the release.  (Version will still be verified.)  In
-  practice, this is unlikely to be an issue, as the RPM version of a
-  GPG key is the key's fingerprint, and collisions are rare.  If you
-  do encounter a GPG key version collision, you will need to set this
-  to "true", whereupon Packages will import the keys into the server's
-  key chain.  Python RPM libraries must be installed for this to work.
+* ``version``: Set the version attribute used when binding
+  Packages. Default is ``auto``.
 
 [yum] section
 -------------

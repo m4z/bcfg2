@@ -1,4 +1,4 @@
-%define release 0.1
+%define release 0.2
 %define __python python
 %{!?py_ver: %define py_ver %(%{__python} -c 'import sys;print(sys.version[0:3])')}
 %define pythonversion %{py_ver}
@@ -6,7 +6,7 @@
 %{!?_initrddir: %define _initrddir %{_sysconfdir}/rc.d/init.d}
 
 Name:             bcfg2
-Version:          1.2.1
+Version:          1.2.2
 Release:          %{release}
 Summary:          Configuration management system
 
@@ -42,23 +42,24 @@ BuildRequires:    libsane1
 
 # %{rhel} wasn't set before rhel 6.  so this checks for old RHEL
 # %systems (and potentially very old Fedora systems, too)
-%if "%{_vendor}" == "redhat" && 0%{?rhel} <= 6 && 0%{?fedora} == 0
+%if "%{_vendor}" == "redhat" && 0%{?rhel} < 6 && 0%{?fedora} == 0
 BuildRequires:    python-sphinx10
 # the python-sphinx10 package doesn't set sys.path correctly, so we
 # have to do it for them
-%define pythonpath /usr/lib/python%{py_ver}/site-packages/Sphinx-1.0.4-py%{py_ver}.egg
+%define pythonpath %(find /usr/lib/python%{py_ver}/site-packages -name %Sphinx*.egg)
 %else
 BuildRequires:    python-sphinx >= 0.6
 %endif
 
+Requires:         python-nose
 Requires:         python-lxml >= 0.9
 %if 0%{?rhel_version}
 # the debian init script needs redhat-lsb.
 # iff we switch to the redhat one, this might not be needed anymore.
 Requires:         redhat-lsb
 %endif
-%if 0%{?fedora} == 0
-# fedora 15 and 16 (and possibly other distros) do not know this tag.
+%if "%{_vendor}" != "redhat"
+# fedora and rhel (and possibly other distros) do not know this tag.
 Recommends:       cron
 %endif
 
@@ -90,8 +91,8 @@ deployment strategies.
 
 This package includes the Bcfg2 client software.
 
-%package -n bcfg2-server
-Version:          %{version}
+%package server
+Version:          1.2.2
 Summary:          Bcfg2 Server
 %if 0%{?suse_version}
 Group:            System/Management
@@ -106,8 +107,10 @@ Requires:         python-lxml >= 1.2.1
 %if "%{_vendor}" == "redhat"
 Requires:         gamin-python
 %endif
+Requires:         /usr/sbin/sendmail
+Requires:         /usr/bin/openssl
 
-%description -n bcfg2-server
+%description server
 Bcfg2 helps system administrators produce a consistent, reproducible,
 and verifiable description of their environment, and offers
 visualization and reporting tools to aid in day-to-day administrative
@@ -135,7 +138,7 @@ deployment strategies.
 
 This package includes the Bcfg2 server software.
 
-%package -n bcfg2-doc
+%package doc
 Summary:          Configuration management system documentation
 %if 0%{?suse_version}
 Group:            Documentation/HTML
@@ -143,7 +146,7 @@ Group:            Documentation/HTML
 Group:            Documentation
 %endif
 
-%description -n bcfg2-doc
+%description doc
 Bcfg2 helps system administrators produce a consistent, reproducible,
 and verifiable description of their environment, and offers
 visualization and reporting tools to aid in day-to-day administrative
@@ -171,8 +174,8 @@ deployment strategies.
 
 This package includes the Bcfg2 documentation.
 
-%package -n bcfg2-web
-Version:          %{version}
+%package web
+Version:          1.2.2
 Summary:          Bcfg2 Web Reporting Interface
 %if 0%{?suse_version}
 Group:            System/Management
@@ -189,7 +192,7 @@ Requires:         apache2-mod_wsgi
 %define apache_conf %{_sysconfdir}/apache2
 %endif
 
-%description -n bcfg2-web
+%description web
 Bcfg2 helps system administrators produce a consistent, reproducible,
 and verifiable description of their environment, and offers
 visualization and reporting tools to aid in day-to-day administrative
@@ -218,7 +221,7 @@ deployment strategies.
 This package includes the Bcfg2 reports web frontend.
 
 %prep
-%setup -q -n bcfg2-%{version}
+%setup -q -n %{name}-%{version}
 
 %build
 %{__python}%{pythonversion} setup.py build
@@ -228,6 +231,7 @@ This package includes the Bcfg2 reports web frontend.
 %{__python}%{pythonversion} setup.py build_sphinx
 
 %install
+rm -rf %{buildroot}
 %{__python}%{pythonversion} setup.py install --root=%{buildroot} --record=INSTALLED_FILES --prefix=/usr
 %{__install} -d %{buildroot}%{_bindir}
 %{__install} -d %{buildroot}%{_sbindir}
@@ -241,7 +245,7 @@ mkdir -p %{buildroot}%{_defaultdocdir}/bcfg2-doc-%{version}
 %{__install} -d %{buildroot}/var/adm/fillup-templates
 %endif
 
-%{__mv} %{buildroot}/usr/bin/bcfg2* %{buildroot}%{_sbindir}
+%{__mv} %{buildroot}%{_bindir}/bcfg2* %{buildroot}%{_sbindir}
 %{__install} -m 755 debian/bcfg2.init %{buildroot}%{_initrddir}/bcfg2
 %{__install} -m 755 debian/bcfg2-server.init %{buildroot}%{_initrddir}/bcfg2-server
 %{__install} -m 755 debian/bcfg2.default %{buildroot}%{_sysconfdir}/default/bcfg2
@@ -267,7 +271,7 @@ mv build/dtd %{buildroot}%{_defaultdocdir}/bcfg2-doc-%{version}/
 %clean
 [ "%{buildroot}" != "/" ] && %{__rm} -rf %{buildroot} || exit 2
 
-%files -n bcfg2
+%files
 %defattr(-,root,root,-)
 %{_sbindir}/bcfg2
 %dir %{python_sitelib}/Bcfg2
@@ -291,47 +295,7 @@ mv build/dtd %{buildroot}%{_defaultdocdir}/bcfg2-doc-%{version}/
 %ghost %attr(0600,root,root) %{_sysconfdir}/bcfg2.conf
 %endif
 
-%post -n bcfg2-server
-# enable daemon on first install only (not on update).
-if [ $1 -eq 1 ]; then
-%if 0%{?suse_version}
-  %fillup_and_insserv -f bcfg2-server
-%else
-  /sbin/chkconfig --add bcfg2-server
-%endif
-fi
-
-%preun -n bcfg2
-%if 0%{?suse_version}
-# stop on removal (not on update).
-if [ $1 -eq 0 ]; then
-  %stop_on_removal bcfg2
-fi
-%endif
-
-%preun -n bcfg2-server
-%if 0%{?suse_version}
-if [ $1 -eq 0 ]; then
-  %stop_on_removal bcfg2-server
-fi
-%endif
-
-%postun -n bcfg2
-%if 0%{?suse_version}
-if [ $1 -eq 0 ]; then
-  %insserv_cleanup
-fi
-%endif
-
-%postun -n bcfg2-server
-%if 0%{?suse_version}
-if [ $1 -eq 0 ]; then
-  # clean up on removal.
-  %insserv_cleanup
-fi
-%endif
-
-%files -n bcfg2-server
+%files server
 %defattr(-,root,root,-)
 %{_initrddir}/bcfg2-server
 %dir %{python_sitelib}/Bcfg2
@@ -368,11 +332,11 @@ fi
 %ghost %attr(0600,root,root) %{_sysconfdir}/bcfg2.conf
 %endif
 
-%files -n bcfg2-doc
+%files doc
 %defattr(-,root,root,-)
 %doc %{_defaultdocdir}/bcfg2-doc-%{version}
 
-%files -n bcfg2-web
+%files web
 %defattr(-,root,root,-)
 %{_datadir}/bcfg2/reports.wsgi
 %{_datadir}/bcfg2/site_media
@@ -381,6 +345,46 @@ fi
 %config(noreplace) %{apache_conf}/conf.d/wsgi_bcfg2.conf
 %if 0%{?mandriva_version} == 0
 %ghost %attr(0600,root,root) %{_sysconfdir}/bcfg2-web.conf
+%endif
+
+%post server
+# enable daemon on first install only (not on update).
+if [ $1 -eq 1 ]; then
+%if 0%{?suse_version}
+  %fillup_and_insserv -f bcfg2-server
+%else
+  /sbin/chkconfig --add bcfg2-server
+%endif
+fi
+
+%preun
+%if 0%{?suse_version}
+# stop on removal (not on update).
+if [ $1 -eq 0 ]; then
+  %stop_on_removal bcfg2
+fi
+%endif
+
+%preun server
+%if 0%{?suse_version}
+if [ $1 -eq 0 ]; then
+  %stop_on_removal bcfg2-server
+fi
+%endif
+
+%postun
+%if 0%{?suse_version}
+if [ $1 -eq 0 ]; then
+  %insserv_cleanup
+fi
+%endif
+
+%postun server
+%if 0%{?suse_version}
+if [ $1 -eq 0 ]; then
+  # clean up on removal.
+  %insserv_cleanup
+fi
 %endif
 
 %changelog
@@ -396,7 +400,7 @@ fi
 - Added -doc sub-package
 
 * Mon Jun 21 2010 Fabian Affolter <fabian@bernewireless.net> - 1.1.0rc3-0.1
-- Changed source0 in order that it works with spectool 
+- Changed source0 in order that it works with spectool
 
 * Fri Feb 2 2007 Mike Brady <mike.brady@devnull.net.nz> 0.9.1
 - Removed use of _libdir due to Red Hat x86_64 issue.
