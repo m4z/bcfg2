@@ -2,20 +2,28 @@ import os
 import copy
 from difflib import SequenceMatcher
 import Bcfg2.Server.Lint
+from Bcfg2.Server.Plugins.Cfg import CfgGenerator
 
 class MergeFiles(Bcfg2.Server.Lint.ServerPlugin):
     """ find Probes or Cfg files with multiple similar files that
     might be merged into one """
-
     def Run(self):
         if 'Cfg' in self.core.plugins:
             self.check_cfg()
         if 'Probes' in self.core.plugins:
             self.check_probes()
 
+    @classmethod
+    def Errors(cls):
+        return {"merge-cfg":"warning",
+                "merge-probes":"warning"}
+
+
     def check_cfg(self):
         for filename, entryset in self.core.plugins['Cfg'].entries.items():
-            for mset in self.get_similar(entryset.entries):
+            candidates = dict([(f, e) for f, e in entryset.entries.items()
+                               if isinstance(e, CfgGenerator)])
+            for mset in self.get_similar(candidates):
                 self.LintError("merge-cfg",
                                "The following files are similar: %s. "
                                "Consider merging them into a single Genshi "
@@ -26,7 +34,7 @@ class MergeFiles(Bcfg2.Server.Lint.ServerPlugin):
     def check_probes(self):
         probes = self.core.plugins['Probes'].probes.entries
         for mset in self.get_similar(probes):
-            self.LintError("merge-cfg",
+            self.LintError("merge-probes",
                            "The following probes are similar: %s. "
                            "Consider merging them into a single probe." %
                            ", ".join([p for p in mset]))

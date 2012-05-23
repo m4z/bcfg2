@@ -1,5 +1,14 @@
 """Django models for Bcfg2 reports."""
-from django.db import models
+import sys
+
+from django.core.exceptions import ImproperlyConfigured
+try:
+    from django.db import models
+except ImproperlyConfigured:
+    e = sys.exc_info()[1]
+    print("Reports: unable to import django models: %s" % e)
+    sys.exit(1)
+
 from django.db import connection, transaction
 from django.db.models import Q
 from datetime import datetime, timedelta
@@ -145,7 +154,7 @@ class InteractiveManager(models.Manager):
             cursor.execute(sql)
             return [item[0] for item in cursor.fetchall()]
         except:
-            '''FIXME - really need some error hadling'''
+            '''FIXME - really need some error handling'''
             pass
         return []
 
@@ -261,22 +270,23 @@ class Interaction(models.Model):
 
 class Reason(models.Model):
     """reason why modified or bad entry did not verify, or changed."""
-    owner = models.TextField(max_length=128, blank=True)
-    current_owner = models.TextField(max_length=128, blank=True)
-    group = models.TextField(max_length=128, blank=True)
-    current_group = models.TextField(max_length=128, blank=True)
-    perms = models.TextField(max_length=4, blank=True)  # txt fixes typing issue
-    current_perms = models.TextField(max_length=4, blank=True)
-    status = models.TextField(max_length=3, blank=True)  # on/off/(None)
-    current_status = models.TextField(max_length=1, blank=True)  # on/off/(None)
-    to = models.TextField(max_length=256, blank=True)
-    current_to = models.TextField(max_length=256, blank=True)
-    version = models.TextField(max_length=128, blank=True)
-    current_version = models.TextField(max_length=128, blank=True)
+    owner = models.CharField(max_length=255, blank=True)
+    current_owner = models.CharField(max_length=255, blank=True)
+    group = models.CharField(max_length=255, blank=True)
+    current_group = models.CharField(max_length=255, blank=True)
+    perms = models.CharField(max_length=4, blank=True)
+    current_perms = models.CharField(max_length=4, blank=True)
+    status = models.CharField(max_length=128, blank=True)
+    current_status = models.CharField(max_length=128, blank=True)
+    to = models.CharField(max_length=1024, blank=True)
+    current_to = models.CharField(max_length=1024, blank=True)
+    version = models.CharField(max_length=1024, blank=True)
+    current_version = models.CharField(max_length=1024, blank=True)
     current_exists = models.BooleanField()  # False means its missing. Default True
-    current_diff = models.TextField(max_length=1280, blank=True)
+    current_diff = models.TextField(max_length=1024*1024, blank=True)
     is_binary = models.BooleanField(default=False)
     is_sensitive = models.BooleanField(default=False)
+    unpruned = models.TextField(max_length=4096, blank=True)
 
     def _str_(self):
         return "Reason"

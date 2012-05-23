@@ -1,4 +1,12 @@
+*.py[co]
+
+# vim
+*.swp
+*.swo
+
+# Packages
 build/
 dist/
 src/Bcfg2
-*.pyc
+*.egg
+*.egg-info

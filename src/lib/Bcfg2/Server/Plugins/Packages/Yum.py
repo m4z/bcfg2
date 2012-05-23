@@ -49,25 +49,25 @@ PULPSERVER = None
 PULPCONFIG = None
 
 
-def _setup_pulp(config):
+def _setup_pulp(setup):
     global PULPSERVER, PULPCONFIG
     if not has_pulp:
-        logger.error("Packages: Cannot create Pulp collection: Pulp libraries not "
-                     "found")
-        raise Bcfg2.Server.Plugin.PluginInitError
+        msg = "Packages: Cannot create Pulp collection: Pulp libraries not found"
+        logger.error(msg)
+        raise Bcfg2.Server.Plugin.PluginInitError(msg)
 
     if PULPSERVER is None:
         try:
-            username = config.get("pulp", "username")
-            password = config.get("pulp", "password")
+            username = setup.cfp.get("packages:pulp", "username")
+            password = setup.cfp.get("packages:pulp", "password")
         except ConfigParser.NoSectionError:
-            logger.error("Packages: No [pulp] section found in Packages/packages.conf")
-            raise Bcfg2.Server.Plugin.PluginInitError
+            msg = "Packages: No [pulp] section found in Packages/packages.conf"
+            logger.error(msg)
+            raise Bcfg2.Server.Plugin.PluginInitError(msg)
         except ConfigParser.NoOptionError:
-            err = sys.exc_info()[1]
-            logger.error("Packages: Required option not found in "
-                         "Packages/packages.conf: %s" % err)
-            raise Bcfg2.Server.Plugin.PluginInitError
+            msg = "Packages: Required option not found in Packages/packages.conf: %s" % sys.exc_info()[1]
+            logger.error(msg)
+            raise Bcfg2.Server.Plugin.PluginInitError(msg)
 
         PULPCONFIG = ConsumerConfig()
         serveropts = PULPCONFIG.server
@@ -90,14 +90,6 @@ class YumCollection(Collection):
         Collection.__init__(self, metadata, sources, basepath, debug=debug)
         self.keypath = os.path.join(self.basepath, "keys")
 
-        if len(sources):
-            config = sources[0].config
-            self.use_yum = has_yum and config.getboolean("yum",
-                                                         "use_yum_libraries",
-                                                         default=False)
-        else:
-            self.use_yum = False
-
         if self.use_yum:
             self.cachefile = os.path.join(self.cachepath,
                                          "cache-%s" % self.cachekey)
@@ -110,11 +102,41 @@ class YumCollection(Collection):
             self.cfgfile = os.path.join(self.configdir,
                                         "%s-yum.conf" % self.cachekey)
             self.write_config()
+        if has_pulp and self.has_pulp_sources:
+            _setup_pulp(self.setup)
 
-            self.helper = self.config.get("yum", "helper",
-                                          default="/usr/sbin/bcfg2-yum-helper")
-        if has_pulp:
-            _setup_pulp(self.config)
+        self._helper = None
+
+    @property
+    def helper(self):
+        try:
+            return self.config.get("yum", "helper")
+        except:
+            pass
+
+        if not self._helper:
+            # first see if bcfg2-yum-helper is in PATH
+            try:
+                Popen(['bcfg2-yum-helper'],
+                      stdin=PIPE, stdout=PIPE, stderr=PIPE).wait()
+                self._helper = 'bcfg2-yum-helper'
+            except OSError:
+                self._helper = "/usr/sbin/bcfg2-yum-helper"
+        return self._helper
+
+    @property
+    def use_yum(self):
+        return has_yum and self.setup.cfp.getboolean("packages:yum",
+                                                     "use_yum_libraries",
+                                                     default=False)
+
+    @property
+    def has_pulp_sources(self):
+        """ see if there are any pulp sources to handle """
+        for source in self.sources:
+            if source.pulp_id:
+                return True
+        return False
 
     def write_config(self):
         if not os.path.exists(self.cfgfile):
@@ -127,9 +149,9 @@ class YumCollection(Collection):
                             debuglevel="0",
                             reposdir="/dev/null")
             try:
-                for opt in self.config.options("yum"):
+                for opt in self.setup.cfp.options("packages:yum"):
                     if opt not in self.option_blacklist:
-                        mainopts[opt] = self.config.get("yum", opt)
+                        mainopts[opt] = self.setup.cfp.get("packages:yum", opt)
             except ConfigParser.NoSectionError:
                 pass
 
@@ -215,8 +237,8 @@ class YumCollection(Collection):
 
             for key in needkeys:
                 # figure out the path of the key on the client
-                keydir = self.config.get("global", "gpg_keypath",
-                                         default="/etc/pki/rpm-gpg")
+                keydir = self.setup.cfp.get("global", "gpg_keypath",
+                                            default="/etc/pki/rpm-gpg")
                 remotekey = os.path.join(keydir, os.path.basename(key))
                 localkey = os.path.join(self.keypath, os.path.basename(key))
                 kdata = open(localkey).read()
@@ -235,14 +257,7 @@ class YumCollection(Collection):
             if keypkg is not None:
                 independent.append(keypkg)
 
-        # see if there are any pulp sources to handle
-        has_pulp_sources = False
-        for source in self.sources:
-            if source.pulp_id:
-                has_pulp_sources = True
-                break
-
-        if has_pulp_sources:
+        if self.has_pulp_sources:
             consumerapi = ConsumerAPI()
             consumer = self._get_pulp_consumer(consumerapi=consumerapi)
             if consumer is None:
@@ -445,13 +460,13 @@ class YumSource(Source):
     basegroups = ['yum', 'redhat', 'centos', 'fedora']
     ptype = 'yum'
 
-    def __init__(self, basepath, xsource, config):
-        Source.__init__(self, basepath, xsource, config)
+    def __init__(self, basepath, xsource, setup):
+        Source.__init__(self, basepath, xsource, setup)
         self.pulp_id = None
         if has_pulp and xsource.get("pulp_id"):
             self.pulp_id = xsource.get("pulp_id")
 
-            _setup_pulp(self.config)
+            _setup_pulp(self.setup)
             repoapi = RepositoryAPI()
             try:
                 self.repo = repoapi.repository(self.pulp_id)
@@ -491,7 +506,10 @@ class YumSource(Source):
         self.needed_paths = set()
         self.file_to_arch = dict()
 
-        self.use_yum = has_yum and config.getboolean("yum", "use_yum_libraries",
+    @property
+    def use_yum(self):
+        return has_yum and self.setup.cfp.getboolean("packages:yum",
+                                                     "use_yum_libraries",
                                                      default=False)
 
     def save_state(self):

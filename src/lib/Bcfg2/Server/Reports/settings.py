@@ -1,11 +1,22 @@
 import django
+import os
 import sys
+import getopt
+import Bcfg2.Options
+
+
+cfile_opt=Bcfg2.Options.CFILE
+cfiles=[cfile_opt.default, '/etc/bcfg2-web.conf']
+for i in range(1, len(sys.argv)):
+    if sys.argv[i] == cfile_opt.cmd:
+        cfiles = sys.argv[i+1]
+        break
 
 # Compatibility import
 from Bcfg2.Bcfg2Py3k import ConfigParser
 # Django settings for bcfg2 reports project.
 c = ConfigParser.ConfigParser()
-if len(c.read(['/etc/bcfg2.conf', '/etc/bcfg2-web.conf'])) == 0:
+if len(c.read(cfiles)) == 0:
     raise ImportError("Please check that bcfg2.conf or bcfg2-web.conf exists "
                       "and is readable by your web server.")
 
@@ -42,6 +53,9 @@ DATABASES = {
         'NAME': db_name
     }
 }
+
+if db_engine == 'ibm_db_django':
+    DATABASES['default']['ENGINE'] = db_engine
 
 if db_engine != 'sqlite3':
     DATABASES['default']['USER'] =  c.get('statistics', 'database_user')

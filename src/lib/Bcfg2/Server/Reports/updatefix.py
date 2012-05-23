@@ -1,12 +1,12 @@
 import Bcfg2.Server.Reports.settings
 
-from django.db import connection, DatabaseError
+from django.db import connection, DatabaseError, backend
 import django.core.management
 import logging
 import sys
 import traceback
 from Bcfg2.Server.Reports.reports.models import InternalDatabaseVersion, \
-                TYPE_BAD, TYPE_MODIFIED, TYPE_EXTRA
+                Reason, TYPE_BAD, TYPE_MODIFIED, TYPE_EXTRA
 logger = logging.getLogger('Bcfg2.Server.Reports.UpdateFix')
 
 
@@ -60,16 +60,71 @@ def _interactions_constraint_or_idx():
         cursor.execute('create unique index reports_interaction_20100601 on reports_interaction (client_id,timestamp)')
 
 
+def _rebuild_reports_reason():
+    """Rebuild the reports_reason table with better data types"""
+    cursor = connection.cursor()
+    columns = ['owner', 'current_owner',
+               'group', 'current_group',
+               'perms', 'current_perms',
+               'status', 'current_status',
+               'to', 'current_to']
+
+    tbl_name = backend.DatabaseOperations().quote_name('reports_reason')
+
+    db_engine = Bcfg2.Server.Reports.settings.DATABASES['default']['ENGINE']
+    if db_engine == 'django.db.backends.mysql':
+        modify_cmd = 'MODIFY '
+    elif db_engine == 'django.db.backends.sqlite3':
+        """ Sqlite is a special case.  Altering columns is not supported. """
+        tmp_tbl_name = backend.DatabaseOperations().quote_name('reports_reason_temp')
+        cursor.execute('ALTER TABLE %s RENAME TO %s' % (tbl_name, tmp_tbl_name))
+        django.core.management.call_command("syncdb", interactive=False, verbosity=0)
+        columns = ",".join([backend.DatabaseOperations().quote_name(f.name) \
+                            for f in Reason._meta.fields])
+        cursor.execute('insert into %s(%s) select %s from %s;' % (tbl_name,
+                                                                  columns,
+                                                                  columns,
+                                                                  tmp_tbl_name))
+        cursor.execute('DROP TABLE %s;' % tmp_tbl_name)
+        return
+    else:
+        modify_cmd = 'ALTER COLUMN '
+
+    col_strings = []
+    for column in columns:
+        col_strings.append("%s %s %s" % ( \
+            modify_cmd,
+            backend.DatabaseOperations().quote_name(column),
+            Reason._meta.get_field(column).db_type()
+        ))
+    cursor.execute('ALTER TABLE %s %s' % (tbl_name, ", ".join(col_strings)))
+
 def _remove_table_column(tbl, col):
     """sqlite doesn't support deleting a column via alter table"""
     cursor = connection.cursor()
-    try:
+    db_engine = Bcfg2.Server.Reports.settings.DATABASES['default']['ENGINE']
+    if db_engine == 'django.db.backends.mysql':
+        db_name = Bcfg2.Server.Reports.settings.DATABASES['default']['NAME']
+        column_exists = cursor.execute('select * from information_schema.columns '
+                                       'where table_schema="%s" and '
+                                       'table_name="%s" '
+                                       'and column_name="%s";' % (db_name, tbl, col))
+        if not column_exists:
+            # column doesn't exist
+            return
+        # if column exists from previous database, remove it
         cursor.execute('alter table %s '
                        'drop column %s;' % (tbl, col))
-    except DatabaseError:
+    elif db_engine == 'django.db.backends.sqlite3':
+        # check if table exists
+        try:
+            cursor.execute('select * from sqlite_master where name=%s and type="table";' % tbl)
+        except DatabaseError:
+            # table doesn't exist
+            return
+
         # sqlite wants us to create a new table containing the columns we want
         # and copy into it http://www.sqlite.org/faq.html#q11
-
         tmptbl_name = "t_backup"
         _tmptbl_create = \
 """create temporary table "%s" (
@@ -171,6 +226,8 @@ _fixes = [_merge_database_table_entries,
           'alter table reports_reason add is_binary bool NOT NULL default False;',
           'alter table reports_reason add is_sensitive bool NOT NULL default False;',
           _remove_table_column('reports_interaction', 'client_version'),
+          "alter table reports_reason add unpruned varchar(1280) not null default '';",
+          _rebuild_reports_reason,
 ]
 
 # this will calculate the last possible version of the database
@@ -230,13 +287,14 @@ def dosync():
         # not yet tested for full functionnality
         django.core.management.call_command("syncdb", interactive=False, verbosity=0)
         if fresh:
-            django.core.management.call_command("loaddata", 'initial_version.xml', verbosity=0)
+            iv = InternalDatabaseVersion.objects.create(version=len(_fixes))
+            logger.debug("loading the initial version at %s" % iv.version)
     elif "syncdb" in dir(django.core.management):
         # this exist only for django 0.96.*
         django.core.management.syncdb(interactive=False, verbosity=0)
         if fresh:
-            logger.debug("loading the initial_version fixtures")
-            django.core.management.load_data(fixture_labels=['initial_version'], verbosity=0)
+            iv = InternalDatabaseVersion.objects.create(version=len(_fixes))
+            logger.debug("loading the initial version at %s" % iv.version)
     else:
         logger.warning("Don't forget to run syncdb")
 
@@ -255,9 +313,10 @@ def update_database():
             know_version = know_version[0]
         logger.debug("Presently at %s" % know_version)
         if know_version.version < lastversion:
+            logger.info("upgrading database")
             new_version = rollupdate(know_version.version)
             if new_version:
-                logger.debug("upgraded to %s" % new_version)
+                logger.info("upgraded to %s" % new_version)
     except:
         logger.error("Error while updating the database")
         for x in traceback.format_exc().splitlines():

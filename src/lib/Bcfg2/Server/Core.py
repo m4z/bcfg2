@@ -16,6 +16,7 @@ except ImportError:
 
 from Bcfg2.Component import Component, exposed
 from Bcfg2.Server.Plugin import PluginInitError, PluginExecutionError
+import Bcfg2.Server
 import Bcfg2.Server.FileMonitor
 import Bcfg2.Server.Plugins.Metadata
 # Compatibility imports
@@ -42,7 +43,10 @@ def sort_xml(node, key=None):
     for child in node:
         sort_xml(child, key)
 
-    sorted_children = sorted(node, key=key)
+    try:
+        sorted_children = sorted(node, key=key)
+    except TypeError:
+        sorted_children = node
     node[:] = sorted_children
 
 
@@ -59,21 +63,30 @@ class Core(Component):
     implementation = 'bcfg2-server'
 
     def __init__(self, repo, plugins, password, encoding,
-                 cfile='/etc/bcfg2.conf', ca=None,
+                 cfile='/etc/bcfg2.conf', ca=None, setup=None,
                  filemonitor='default', start_fam_thread=False):
         Component.__init__(self)
         self.datastore = repo
-        if filemonitor not in Bcfg2.Server.FileMonitor.available:
+
+        try:
+            fm = Bcfg2.Server.FileMonitor.available[filemonitor]
+        except KeyError:
             logger.error("File monitor driver %s not available; "
                          "forcing to default" % filemonitor)
-            filemonitor = 'default'
+            fm = Bcfg2.Server.FileMonitor.available['default']
+        famargs = dict(ignore=[], debug=False)
+        if 'ignore' in setup:
+            famargs['ignore'] = setup['ignore']
+        if 'debug' in setup:
+            famargs['debug'] = setup['debug']
         try:
-            self.fam = Bcfg2.Server.FileMonitor.available[filemonitor]()
+            self.fam = fm(**famargs)
         except IOError:
             logger.error("Failed to instantiate fam driver %s" % filemonitor,
                          exc_info=1)
-            raise CoreInitError("failed to instantiate fam driver (used %s)" % \
+            raise CoreInitError("Failed to instantiate fam driver (used %s)" %
                                 filemonitor)
+
         self.pubspace = {}
         self.cfile = cfile
         self.cron = {}
@@ -82,6 +95,7 @@ class Core(Component):
         self.revision = '-1'
         self.password = password
         self.encoding = encoding
+        self.setup = setup
         atexit.register(self.shutdown)
         # Create an event to signal worker threads to shutdown
         self.terminate = threading.Event()
@@ -128,6 +142,11 @@ class Core(Component):
         self.fam_thread = threading.Thread(target=self._file_monitor_thread)
         if start_fam_thread:
             self.fam_thread.start()
+            self.monitor_cfile()
+
+    def monitor_cfile(self):
+        if self.setup:
+            self.fam.AddMonitor(self.cfile, self.setup)
 
     def plugins_by_type(self, base_cls):
         """Return a list of loaded plugins that match the passed type.
@@ -188,6 +207,7 @@ class Core(Component):
         """Shutting down the plugins."""
         if not self.terminate.isSet():
             self.terminate.set()
+            self.fam.shutdown()
             for plugin in list(self.plugins.values()):
                 plugin.shutdown()
 
@@ -239,12 +259,14 @@ class Core(Component):
                 continue
             try:
                 self.Bind(entry, metadata)
-            except PluginExecutionError, exc:
+            except PluginExecutionError:
+                exc = sys.exc_info()[1]
                 if 'failure' not in entry.attrib:
                     entry.set('failure', 'bind error: %s' % format_exc())
-                logger.error("Failed to bind entry: %s %s" % \
-                             (entry.tag, entry.get('name')))
-            except Exception, exc:
+                logger.error("Failed to bind entry %s:%s: %s" %
+                             (entry.tag, entry.get('name'), exc))
+            except Exception:
+                exc = sys.exc_info()[1]
                 if 'failure' not in entry.attrib:
                     entry.set('failure', 'bind error: %s' % format_exc())
                 logger.error("Unexpected failure in BindStructure: %s %s" \
@@ -284,7 +306,8 @@ class Core(Component):
         if len(g2list) == 1:
             return g2list[0].HandleEntry(entry, metadata)
         entry.set('failure', 'no matching generator')
-        raise PluginExecutionError(entry.tag, entry.get('name'))
+        raise PluginExecutionError("No matching generator: %s:%s" %
+                                   (entry.tag, entry.get('name')))
 
     def BuildConfiguration(self, client):
         """Build configuration for clients."""
@@ -388,9 +411,9 @@ class Core(Component):
             return lxml.etree.tostring(resp, encoding='UTF-8',
                                        xml_declaration=True)
         except Bcfg2.Server.Plugins.Metadata.MetadataConsistencyError:
-            warning = 'Client metadata resolution error for %s; check server log' % address[0]
+            warning = 'Client metadata resolution error for %s' % address[0]
             self.logger.warning(warning)
-            raise xmlrpclib.Fault(6, warning)
+            raise xmlrpclib.Fault(6, warning + "; check server log")
         except Bcfg2.Server.Plugins.Metadata.MetadataRuntimeError:
             err_msg = 'Metadata system runtime failure'
             self.logger.error(err_msg)
@@ -411,7 +434,8 @@ class Core(Component):
         # clear dynamic groups
         self.metadata.cgroups[meta.hostname] = []
         try:
-            xpdata = lxml.etree.XML(probedata.encode('utf-8'))
+            xpdata = lxml.etree.XML(probedata.encode('utf-8'),
+                                    parser=Bcfg2.Server.XMLParser)
         except:
             self.logger.error("Failed to parse probe data from client %s" % \
                               (address[0]))
@@ -460,7 +484,8 @@ class Core(Component):
     @exposed
     def RecvStats(self, address, stats):
         """Act on statistics upload."""
-        sdata = lxml.etree.XML(stats.encode('utf-8'))
+        sdata = lxml.etree.XML(stats.encode('utf-8'),
+                               parser=Bcfg2.Server.XMLParser)
         client = self.metadata.resolve_client(address)
         self.process_statistics(client, sdata)
         return "<ok/>"

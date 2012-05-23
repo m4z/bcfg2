@@ -3,7 +3,6 @@
 
 import sys
 import logging
-import Bcfg2.Server.Core
 import Bcfg2.Logger
 import Bcfg2.Options
 import Bcfg2.Server.Admin
@@ -31,31 +30,27 @@ def create_description():
     for mode in modes:
         try:
             description.write(("   %-15s   %s\n" %
-                   (mode, mode_import(mode).__shorthelp__)))
+                               (mode, mode_import(mode).__shorthelp__)))
         except (ImportError, SystemExit):
             pass
     return description.getvalue()
 
 def main():
-    optinfo = {
-        'configfile': Bcfg2.Options.CFILE,
-        'help': Bcfg2.Options.HELP,
-        'verbose': Bcfg2.Options.VERBOSE,
-        'repo': Bcfg2.Options.SERVER_REPOSITORY,
-        'plugins': Bcfg2.Options.SERVER_PLUGINS,
-        'event debug': Bcfg2.Options.DEBUG,
-        'filemonitor': Bcfg2.Options.SERVER_FILEMONITOR,
-        'password': Bcfg2.Options.SERVER_PASSWORD,
-        'encoding': Bcfg2.Options.ENCODING,
-        }
+    optinfo = dict()
+    optinfo.update(Bcfg2.Options.CLI_COMMON_OPTIONS)
+    optinfo.update(Bcfg2.Options.SERVER_COMMON_OPTIONS)
     setup = Bcfg2.Options.OptionParser(optinfo)
     # override default help message to include description of all modes
     setup.hm = "%s\n%s" % (setup.buildHelpMessage(), create_description())
     setup.parse(sys.argv[1:])
 
-    log_args = dict(to_syslog=False, to_console=logging.WARNING)
-    if setup['verbose']:
-        log_args['to_console'] = logging.DEBUG
+    if setup['debug']:
+        level = logging.DEBUG
+    elif setup['verbose']:
+        level = logging.INFO
+    else:
+        level = logging.WARNING
+    Bcfg2.Logger.setup_logging('bcfg2-admin', to_syslog=False, level=level)
 
     # Provide help if requested or no args were specified
     if (not setup['args'] or len(setup['args']) < 1 or

@@ -6,7 +6,8 @@ __all__ = ['Bundles',
            'Pkgmgr',
            'RequiredAttrs',
            'Validate',
-           'Genshi']
+           'Genshi',
+           'Deltas']
 
 import logging
 import os
@@ -53,13 +54,19 @@ class Plugin (object):
         self.config = config
         self.logger = logging.getLogger('bcfg2-lint')
         if errorhandler is None:
-            self.errorHandler = ErrorHandler()
+            self.errorhandler = ErrorHandler()
         else:
-            self.errorHandler = errorhandler
+            self.errorhandler = errorhandler
+        self.errorhandler.RegisterErrors(self.Errors())
 
     def Run(self):
         """ run the plugin.  must be overloaded by child classes """
         pass
+
+    @classmethod
+    def Errors(cls):
+        """ returns a dict of errors the plugin supplies.  must be
+        overloaded by child classes """
 
     def HandlesFile(self, fname):
         """ returns true if the given file should be handled by the
@@ -72,7 +79,7 @@ class Plugin (object):
                                              fname)) in self.files)
 
     def LintError(self, err, msg):
-        self.errorHandler.dispatch(err, msg)
+        self.errorhandler.dispatch(err, msg)
 
     def RenderXML(self, element):
         """render an XML element for error output -- line number
@@ -90,35 +97,6 @@ class Plugin (object):
 
 
 class ErrorHandler (object):
-    # how to handle different errors by default
-    _errors = {"no-infoxml":"warning",
-               "paranoid-false":"warning",
-               "bundle-not-found":"error",
-               "inconsistent-bundle-name":"warning",
-               "group-tag-not-allowed":"error",
-               "unexpanded-keywords":"warning",
-               "keywords-not-found":"warning",
-               "comments-not-found":"warning",
-               "broken-xinclude-chain":"warning",
-               "duplicate-client":"error",
-               "duplicate-group":"error",
-               "duplicate-package":"error",
-               "multiple-default-groups":"error",
-               "required-infoxml-attrs-missing":"error",
-               "unknown-entry-type":"error",
-               "required-attrs-missing":"error",
-               "extra-attrs":"warning",
-               "schema-failed-to-parse":"warning",
-               "properties-schema-not-found":"warning",
-               "xml-failed-to-parse":"error",
-               "xml-failed-to-read":"error",
-               "xml-failed-to-verify":"error",
-               "merge-cfg":"warning",
-               "merge-probes":"warning",
-               "input-output-error":"error",
-               "genshi-syntax-error":"error",
-               "pattern-fails-to-initialize":"error"}
-
     def __init__(self, config=None):
         self.errors = 0
         self.warnings = 0
@@ -127,11 +105,12 @@ class ErrorHandler (object):
 
         termsize = get_termsize()
         if termsize is not None:
-            self._wrapper = textwrap.TextWrapper(initial_indent="  ",
-                                                 subsequent_indent="  ",
-                                                 width=termsize[0])
+            twrap = textwrap.TextWrapper(initial_indent="  ",
+                                        subsequent_indent="  ",
+                                        width=termsize[0])
+            self._wrapper = twrap.wrap
         else:
-            self._wrapper = None
+            self._wrapper = lambda s: [s]
 
         self._handlers = {}
         if config is not None:
@@ -143,7 +122,8 @@ class ErrorHandler (object):
                 else:
                     self._handlers[err] = self.debug
 
-        for err, action in self._errors.items():
+    def RegisterErrors(self, errors):
+        for err, action in errors.items():
             if err not in self._handlers:
                 if "warn" in action:
                     self._handlers[err] = self.warn
@@ -151,7 +131,7 @@ class ErrorHandler (object):
                     self._handlers[err] = self.error
                 else:
                     self._handlers[err] = self.debug
-
+        
     def dispatch(self, err, msg):
         if err in self._handlers:
             self._handlers[err](msg)
@@ -186,13 +166,10 @@ class ErrorHandler (object):
         rawlines = msg.splitlines()
         firstline = True
         for rawline in rawlines:
-            if self._wrapper:
-                lines = self._wrapper.wrap(rawline)
-            else:
-                lines = [rawline]
+            lines = self._wrapper(rawline)
             for line in lines:
                 if firstline:
-                    logfunc("%s%s" % (prefix, line.lstrip()))
+                    logfunc(prefix + line.lstrip())
                     firstline = False
                 else:
                     logfunc(line)

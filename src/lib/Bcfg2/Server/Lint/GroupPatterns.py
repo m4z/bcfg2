@@ -14,6 +14,10 @@ class GroupPatterns(Bcfg2.Server.Lint.ServerPlugin):
                 self.check(entry, groups, ptype='NamePattern')
                 self.check(entry, groups, ptype='NameRange')
 
+    @classmethod
+    def Errors(cls):
+        return {"pattern-fails-to-initialize":"error"}
+
     def check(self, entry, groups, ptype="NamePattern"):
         if ptype == "NamePattern":
             pmap = lambda p: PatternMap(p, None, groups)

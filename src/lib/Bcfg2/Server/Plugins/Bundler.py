@@ -6,13 +6,12 @@ import os
 import os.path
 import re
 import sys
-
+import Bcfg2.Server
 import Bcfg2.Server.Plugin
 
 try:
-    import genshi.template
     import genshi.template.base
-    import Bcfg2.Server.Plugins.SGenshi
+    from Bcfg2.Server.Plugins.SGenshi import SGenshiTemplateFile
     have_genshi = True
 except:
     have_genshi = False
@@ -51,24 +50,19 @@ class Bundler(Bcfg2.Server.Plugin.Plugin,
             raise Bcfg2.Server.Plugin.PluginInitError
 
     def template_dispatch(self, name):
-        bundle = lxml.etree.parse(name)
+        bundle = lxml.etree.parse(name,
+                                  parser=Bcfg2.Server.XMLParser)
         nsmap = bundle.getroot().nsmap
-        if name.endswith('.xml'):
-            if have_genshi and \
-               (nsmap == {'py': 'http://genshi.edgewall.org/'}):
-                # allow for genshi bundles with .xml extensions
-                spec = Bcfg2.Server.Plugin.Specificity()
-                return Bcfg2.Server.Plugins.SGenshi.SGenshiTemplateFile(name,
-                                                                        spec,
-                                                                        self.encoding)
-            else:
-                return BundleFile(name)
-        elif name.endswith('.genshi'):
+        if (name.endswith('.genshi') or
+            ('py' in nsmap and
+             nsmap['py'] == 'http://genshi.edgewall.org/')):
             if have_genshi:
                 spec = Bcfg2.Server.Plugin.Specificity()
-                return Bcfg2.Server.Plugins.SGenshi.SGenshiTemplateFile(name,
-                                                                        spec,
-                                                                        self.encoding)
+                return SGenshiTemplateFile(name, spec, self.encoding)
+            else:
+                raise Bcfg2.Server.Plugin.PluginExecutionError("Genshi not available: %s" % name)
+        else:
+            return BundleFile(name)
 
     def BuildStructures(self, metadata):
         """Build all structures for client (metadata)."""

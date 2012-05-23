@@ -6,8 +6,6 @@
 Bcfg2 Dynamic Reporting System
 ==============================
 
-.. versionadded:: 0.8.2
-
 Installation
 ============
 
@@ -70,6 +68,15 @@ Apache configuration for web-based reports
     In order to make this work, you will need to specify your web prefix
     by adding a **web_prefix** setting in the [statistics] section of
     your ``bcfg2.conf``.
+
+.. warning::
+
+    When running with SELINUX enabled, you can have potential problems
+    with the WSGISocketPrefix. One solution that works without too much
+    trouble is modifying your prefix so that it is located in a standard
+    location::
+
+        WSGISocketPrefix /var/run/httpd/wsgi
 
 An example site config is included below::
 

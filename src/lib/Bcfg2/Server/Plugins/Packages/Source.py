@@ -33,14 +33,15 @@ class SourceInitError(Exception):
 class Source(Bcfg2.Server.Plugin.Debuggable):
     mrepo_re = re.compile(r'/RPMS\.([^/]+)')
     pulprepo_re = re.compile(r'pulp/repos/([^/]+)')
-    genericrepo_re = re.compile(r'https?://[^/]+/(.+?)/?$')
+    genericrepo_re = re.compile('https?://.*?/([^/]+)/?$')
     basegroups = []
 
-    def __init__(self, basepath, xsource, config):
+    def __init__(self, basepath, xsource, setup):
         Bcfg2.Server.Plugin.Debuggable.__init__(self)
         self.basepath = basepath
         self.xsource = xsource
-        self.config = config
+        self.setup = setup
+        self.essentialpkgs = set()
 
         try:
             self.version = xsource.find('Version').text
@@ -136,8 +137,9 @@ class Source(Bcfg2.Server.Plugin.Debuggable):
 
     def get_repo_name(self, url_map):
         # try to find a sensible name for a repo
-        if url_map['component']:
-            rname = url_map['component']
+        if 'components' in url_map and url_map['components']:
+            # use the first component as the name
+            rname = url_map['components'][0]
         else:
             name = None
             for repo_re in (self.mrepo_re,
@@ -145,6 +147,7 @@ class Source(Bcfg2.Server.Plugin.Debuggable):
                             self.genericrepo_re):
                 match = repo_re.search(url_map['url'])
                 if match:
+                    name = match.group(1)
                     break
             if name is None:
                 # couldn't figure out the name from the URL or URL map
@@ -165,6 +168,9 @@ class Source(Bcfg2.Server.Plugin.Debuggable):
             return "%s at %s" % (self.__class__.__name__, self.url)
         else:
             return self.__class__.__name__
+
+    def __repr__(self):
+        return str(self)
 
     def get_urls(self):
         return []
@@ -269,8 +275,8 @@ class Source(Bcfg2.Server.Plugin.Debuggable):
         if not found_arch:
             return False
 
-        if self.config.getboolean("global", "magic_groups",
-                                  default=True) == False:
+        if not self.setup.cfp.getboolean("packages", "magic_groups",
+                                         default=True):
             return True
         else:
             for group in self.basegroups:

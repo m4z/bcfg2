@@ -1,9 +1,11 @@
 """Option parsing library for utilities."""
 
-import getopt
+import re
 import os
 import sys
+import copy
 import shlex
+import getopt
 import Bcfg2.Client.Tools
 # Compatibility imports
 from Bcfg2.Bcfg2Py3k import ConfigParser
@@ -20,17 +22,40 @@ class OptionFailure(Exception):
 DEFAULT_CONFIG_LOCATION = '/etc/bcfg2.conf' #/etc/bcfg2.conf
 DEFAULT_INSTALL_PREFIX = '/usr' #/usr
 
+class DefaultConfigParser(ConfigParser.ConfigParser):
+    def get(self, section, option, **kwargs):
+        """ convenience method for getting config items """
+        default = None
+        if 'default' in kwargs:
+            default = kwargs['default']
+            del kwargs['default']
+        try:
+            return ConfigParser.ConfigParser.get(self, section, option,
+                                                 **kwargs)
+        except (ConfigParser.NoSectionError, ConfigParser.NoOptionError):
+            if default is not None:
+                return default
+            else:
+                raise
+
+    def getboolean(self, section, option, **kwargs):
+        """ convenience method for getting boolean config items """
+        default = None
+        if 'default' in kwargs:
+            default = kwargs['default']
+            del kwargs['default']
+        try:
+            return ConfigParser.ConfigParser.getboolean(self, section,
+                                                        option, **kwargs)
+        except (ConfigParser.NoSectionError, ConfigParser.NoOptionError,
+                ValueError):
+            if default is not None:
+                return default
+            else:
+                raise
+
+
 class Option(object):
-    cfpath = DEFAULT_CONFIG_LOCATION
-    __cfp = False
-
-    def getCFP(self):
-        if not self.__cfp:
-            self.__cfp = ConfigParser.ConfigParser()
-            self.__cfp.readfp(open(self.cfpath))
-        return self.__cfp
-    cfp = property(getCFP)
-
     def get_cooked_value(self, value):
         if self.boolean:
             return True
@@ -92,7 +117,7 @@ class Option(object):
         else:
             return self.cmd[2:]
 
-    def parse(self, opts, rawopts):
+    def parse(self, opts, rawopts, configparser=None):
         if self.cmd and opts:
             # Processing getopted data
             optinfo = [opt[1] for opt in opts if opt[0] == self.cmd]
@@ -110,26 +135,35 @@ class Option(object):
         if self.env and self.env in os.environ:
             self.value = self.get_cooked_value(os.environ[self.env])
             return
-        if self.cf:
-            # FIXME: This is potentially masking a lot of errors
+        if self.cf and configparser:
             try:
-                self.value = self.get_cooked_value(self.cfp.get(*self.cf))
+                self.value = self.get_cooked_value(configparser.get(*self.cf))
                 return
-            except:
+            except (ConfigParser.NoSectionError, ConfigParser.NoOptionError):
                 pass
         # Default value not cooked
         self.value = self.default
 
 class OptionSet(dict):
-    def __init__(self, *args):
+    def __init__(self, *args, **kwargs):
         dict.__init__(self, *args)
         self.hm = self.buildHelpMessage()
+        if 'configfile' in kwargs:
+            self.cfile = kwargs['configfile']
+        else:
+            self.cfile = DEFAULT_CONFIG_LOCATION
+        self.cfp = DefaultConfigParser()
+        if (len(self.cfp.read(self.cfile)) == 0 and
+            ('quiet' not in kwargs or not kwargs['quiet'])):
+            print("Warning! Unable to read specified configuration file: %s" %
+                  self.cfile)
 
     def buildGetopt(self):
         return ''.join([opt.buildGetopt() for opt in list(self.values())])
 
     def buildLongGetopt(self):
-        return [opt.buildLongGetopt() for opt in list(self.values()) if opt.long]
+        return [opt.buildLongGetopt() for opt in list(self.values())
+                if opt.long]
 
     def buildHelpMessage(self):
         if hasattr(self, 'hm'):
@@ -164,15 +198,17 @@ class OptionSet(dict):
                 continue
             option = self[key]
             if do_getopt:
-                option.parse(opts, [])
+                option.parse(opts, [], configparser=self.cfp)
             else:
-                option.parse([], argv)
+                option.parse([], argv, configparser=self.cfp)
             if hasattr(option, 'value'):
                 val = option.value
                 self[key] = val
 
-list_split = lambda x:x.replace(' ','').split(',')
-flist_split = lambda x:list_split(x.replace(':', '').lower())
+def list_split(c_string):
+    if c_string:
+        return re.split("\s*,\s*", c_string)
+    return []
 
 def colon_split(c_string):
     if c_string:
@@ -222,16 +258,11 @@ PARANOID_MAX_COPIES = Option('Specify the number of paranoid copies you want',
                              default=1, cf=('paranoid', 'max_copies'),
                              odesc='<max paranoid copies>')
 OMIT_LOCK_CHECK = Option('Omit lock check', default=False, cmd='-O')
-CORE_PROFILE = Option('profile',
-                      default=False, cmd='-p', )
-FILES_ON_STDIN = Option('Operate on a list of files supplied on stdin',
-                        cmd='--stdin', default=False, long_arg=True)
+CORE_PROFILE = Option('profile', default=False, cmd='-p', )
 SCHEMA_PATH = Option('Path to XML Schema files', cmd='--schema',
                      odesc='<schema path>',
                      default="%s/share/bcfg2/schemas" % DEFAULT_INSTALL_PREFIX,
                      long_arg=True)
-REQUIRE_SCHEMA = Option("Require property files to have matching schema files",
-                        cmd="--require-schema", default=False, long_arg=True)
 
 # Metadata options
 MDATA_OWNER = Option('Default Path owner',
@@ -247,7 +278,7 @@ MDATA_PERMS = Option('Default Path permissions',
                      '644', cf=('mdata', 'perms'),
                      odesc='octal permissions')
 MDATA_PARANOID = Option('Default Path paranoid setting',
-                     'false', cf=('mdata', 'paranoid'),
+                     'true', cf=('mdata', 'paranoid'),
                      odesc='Path paranoid setting')
 MDATA_SENSITIVE = Option('Default Path sensitive setting',
                      'false', cf=('mdata', 'sensitive'),
@@ -272,6 +303,10 @@ SERVER_MCONNECT = Option('Server Metadata Connector list', cook=list_split,
                          cf=('server', 'connectors'), default=['Probes'], )
 SERVER_FILEMONITOR = Option('Server file monitor', cf=('server', 'filemonitor'),
                             default='default', odesc='File monitoring driver')
+SERVER_FAM_IGNORE = Option('File globs to ignore',
+                           cf=('server', 'ignore_files'), cook=list_split,
+                           default=['*~', '.#*', '*#', '*.swp', '.*.swx', 'SCCS',
+                                    '.svn', '4913', '.gitignore'])
 SERVER_LISTEN_ALL = Option('Listen on all interfaces',
                            cf=('server', 'listen_all'),
                            cmd='--listen-all',
@@ -339,9 +374,6 @@ CLIENT_INDEP = Option('Only configure independent entries, ignore bundles', defa
                        cmd='-z')
 CLIENT_KEVLAR = Option('Run in kevlar (bulletproof) mode', default=False,
                        cmd='-k', )
-CLIENT_DLIST = Option('Run client in server decision list mode', default='none',
-                      cf=('client', 'decision'),
-                      cmd='-l', odesc='<whitelist|blacklist|none>')
 CLIENT_FILE = Option('Configure from a file rather than querying the server',
                      default=False, cmd='-f', odesc='<specification path>')
 CLIENT_QUICK = Option('Disable some checksum verification', default=False,
@@ -353,8 +385,14 @@ CLIENT_SERVICE_MODE = Option('Set client service mode', default='default',
 CLIENT_TIMEOUT = Option('Set the client XML-RPC timeout', default=90,
                         cmd='-t', cf=('communication', 'timeout'),
                         odesc='<timeout>')
+CLIENT_DLIST = Option('Run client in server decision list mode', default='none',
+                      cf=('client', 'decision'),
+                      cmd='-l', odesc='<whitelist|blacklist|none>')
+CLIENT_DECISION_LIST = Option('Decision List', default=False,
+                              cmd="--decision-list", odesc='<file>',
+                              long_arg=True)
 
-# bcfg2-test options
+# bcfg2-test and bcfg2-lint options
 TEST_NOSEOPTS = Option('Options to pass to nosetests', default=[],
                        cmd='--nose-options', cf=('bcfg2_test', 'nose_options'),
                        odesc='<opts>', long_arg=True, cook=shlex.split)
@@ -362,6 +400,13 @@ TEST_IGNORE = Option('Ignore these entries if they fail to build.', default=[],
                      cmd='--ignore',
                      cf=('bcfg2_test', 'ignore_entries'), long_arg=True,
                      odesc='<Type>:<name>,<Type>:<name>', cook=list_split)
+LINT_CONFIG = Option('Specify bcfg2-lint configuration file',
+                     '/etc/bcfg2-lint.conf', cmd='--lint-config',
+                     odesc='<conffile>', long_arg=True)
+LINT_SHOW_ERRORS = Option('Show error handling', False, cmd='--list-errors',
+                          long_arg=True)
+LINT_FILES_ON_STDIN = Option('Operate on a list of files supplied on stdin',
+                             cmd='--stdin', default=False, long_arg=True)
 
 # APT client tool options
 CLIENT_APT_TOOLS_INSTALL_PATH = Option('Apt tools install path',
@@ -370,11 +415,40 @@ CLIENT_APT_TOOLS_INSTALL_PATH = Option('Apt tools install path',
 CLIENT_APT_TOOLS_VAR_PATH = Option('Apt tools var path',
                                    cf=('APT', 'var_path'), default='/var')
 CLIENT_SYSTEM_ETC_PATH = Option('System etc path', cf=('APT', 'etc_path'),
-                         default='/etc')
+                                default='/etc')
 
 # Logging options
 LOGGING_FILE_PATH = Option('Set path of file log', default=None,
                            cmd='-o', odesc='<path>', cf=('logging', 'path'))
+
+# Plugin-specific options
+CFG_VALIDATION = Option('Run validation on Cfg files', default=True,
+                        cf=('cfg', 'validation'), cmd='--cfg-validation',
+                        long_arg=True, cook=get_bool)
+
+
+# Option groups
+CLI_COMMON_OPTIONS = dict(configfile=CFILE,
+                          debug=DEBUG,
+                          help=HELP,
+                          verbose=VERBOSE,
+                          encoding=ENCODING,
+                          logging=LOGGING_FILE_PATH)
+
+DAEMON_COMMON_OPTIONS = dict(daemon=DAEMON,
+                             listen_all=SERVER_LISTEN_ALL)
+
+SERVER_COMMON_OPTIONS = dict(repo=SERVER_REPOSITORY,
+                             plugins=SERVER_PLUGINS,
+                             password=SERVER_PASSWORD,
+                             filemonitor=SERVER_FILEMONITOR,
+                             ignore=SERVER_FAM_IGNORE,
+                             location=SERVER_LOCATION,
+                             static=SERVER_STATIC,
+                             key=SERVER_KEY,
+                             cert=SERVER_CERT,
+                             ca=SERVER_CA,
+                             protocol=SERVER_PROTOCOL)
 
 class OptionParser(OptionSet):
     """
@@ -382,15 +456,39 @@ class OptionParser(OptionSet):
        getting the value of the config file
     """
     def __init__(self, args):
-        self.Bootstrap = OptionSet([('configfile', CFILE)])
+        self.Bootstrap = OptionSet([('configfile', CFILE)], quiet=True)
         self.Bootstrap.parse(sys.argv[1:], do_getopt=False)
-        if self.Bootstrap['configfile'] != Option.cfpath:
-            Option.cfpath = self.Bootstrap['configfile']
-            Option.__cfp = False
-        OptionSet.__init__(self, args)
-        try:
-            f = open(Option.cfpath, 'r')
-            f.close()
-        except IOError:
-            e = sys.exc_info()[1]
-            print("Warning! Unable to read specified configuration file: %s" % e)
+        OptionSet.__init__(self, args, configfile=self.Bootstrap['configfile'])
+        self.optinfo = copy.copy(args)
+
+    def HandleEvent(self, event):
+        if 'configfile' not in self or not isinstance(self['configfile'], str):
+            # we haven't parsed options yet, or CFILE wasn't included
+            # in the options
+            return
+        if event.filename != self['configfile']:
+            print("Got event for unknown file: %s" % event.filename)
+            return
+        if event.code2str() == 'deleted':
+            return
+        self.reparse()
+
+    def reparse(self):
+        for key, opt in self.optinfo.items():
+            self[key] = opt
+        if "args" not in self.optinfo:
+            del self['args']
+        self.parse(self.argv, self.do_getopt)
+
+    def parse(self, argv, do_getopt=True):
+        self.argv = argv
+        self.do_getopt = do_getopt
+        OptionSet.parse(self, self.argv, do_getopt=self.do_getopt)
+
+    def add_option(self, name, opt):
+        self[name] = opt
+        self.optinfo[name] = opt
+
+    def update(self, optdict):
+        dict.update(self, optdict)
+        self.optinfo.update(optdict)

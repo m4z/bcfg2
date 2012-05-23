@@ -4,7 +4,6 @@ import copy
 import logging
 import lxml.etree
 import os
-import os.path
 import pickle
 import posixpath
 import re
@@ -25,6 +24,11 @@ else:
 from Bcfg2.Bcfg2Py3k import Queue
 from Bcfg2.Bcfg2Py3k import Empty
 from Bcfg2.Bcfg2Py3k import Full
+
+# make encoding available
+encparse = Bcfg2.Options.OptionParser({'encoding': Bcfg2.Options.ENCODING})
+encparse.parse([])
+encoding = encparse['encoding']
 
 # grab default metadata info from bcfg2.conf
 opts = {'owner': Bcfg2.Options.MDATA_OWNER,
@@ -122,6 +126,9 @@ class Plugin(Debuggable):
 
     def shutdown(self):
         self.running = False
+
+    def __str__(self):
+        return "%s Plugin" % self.__class__.__name__
 
 
 class Generator(object):
@@ -478,8 +485,8 @@ class DirectoryBacked(object):
             return
 
         if event.requestID not in self.handles:
-            logger.warn("Got %s event with unknown handle (%s) for %s"
-                        % (action, event.requestID, abspath))
+            logger.warn("Got %s event with unknown handle (%s) for %s" %
+                        (action, event.requestID, event.filename))
             return
 
         # Calculate the absolute and relative paths this event refers to
@@ -520,21 +527,13 @@ class DirectoryBacked(object):
                     # didn't know about. Go ahead and treat it like a
                     # "created" event, but log a warning, because this
                     # is unexpected.
-                    logger.warn("Got %s event for unexpected dir %s" % (action,
-                                                                        abspath))
+                    logger.warn("Got %s event for unexpected dir %s" %
+                                (action, abspath))
                     self.add_directory_monitor(relpath)
             else:
-                logger.warn("Got unknown dir event %s %s %s" % (event.requestID,
-                                                                event.code2str(),
-                                                                abspath))
+                logger.warn("Got unknown dir event %s %s %s" %
+                            (event.requestID, event.code2str(), abspath))
         else:
-            # Deal with events for non-directories
-            if ((event.filename[-1] == '~') or
-                (event.filename[:2] == '.#') or
-                (event.filename[-4:] == '.swp') or
-                (event.filename in ['SCCS', '.svn', '4913']) or
-                (not self.patterns.match(event.filename))):
-                return
             if action in ['exists', 'created']:
                 self.add_entry(relpath, event)
             elif action == 'changed':
@@ -545,13 +544,13 @@ class DirectoryBacked(object):
                     # know about. Go ahead and treat it like a
                     # "created" event, but log a warning, because this
                     # is unexpected.
-                    logger.warn("Got %s event for unexpected file %s" % (action,
-                                                                         abspath))
+                    logger.warn("Got %s event for unexpected file %s" %
+                                (action,
+                                 abspath))
                     self.add_entry(relpath, event)
             else:
-                logger.warn("Got unknown file event %s %s %s" % (event.requestID,
-                                                                 event.code2str(),
-                                                                 abspath))
+                logger.warn("Got unknown file event %s %s %s" %
+                            (event.requestID, event.code2str(), abspath))
 
 
 class XMLFileBacked(FileBacked):
@@ -581,16 +580,18 @@ class XMLFileBacked(FileBacked):
         return iter(self.entries)
 
     def __str__(self):
-        return "%s: %s" % (self.name, lxml.etree.tostring(self.xdata))
+        return "%s at %s" % (self.__class__.__name__, self.name)
 
 
 class SingleXMLFileBacked(XMLFileBacked):
     """This object is a coherent cache for an independent XML file."""
-    def __init__(self, filename, fam):
+    def __init__(self, filename, fam, should_monitor=True):
         XMLFileBacked.__init__(self, filename)
         self.extras = []
         self.fam = fam
-        self.fam.AddMonitor(filename, self)
+        self.should_monitor = should_monitor
+        if should_monitor:
+            self.fam.AddMonitor(filename, self)
 
     def _follow_xincludes(self, fname=None, xdata=None):
         ''' follow xincludes, adding included files to fam and to
@@ -612,8 +613,9 @@ class SingleXMLFileBacked(XMLFileBacked):
                 self._follow_xincludes(fname=fpath)
 
     def add_monitor(self, fpath, fname):
-        self.fam.AddMonitor(fpath, self)
-        self.extras.append(fname)
+        if self.should_monitor:
+            self.fam.AddMonitor(fpath, self)
+            self.extras.append(fname)
 
     def Index(self):
         """Build local data structures."""
@@ -805,7 +807,7 @@ class XMLSrc(XMLFileBacked):
         return str(self.items)
 
 
-class InfoXML (XMLSrc):
+class InfoXML(XMLSrc):
     __node__ = InfoNode
 
 
@@ -878,6 +880,9 @@ class PrioDir(Plugin, Generator, XMLDirectoryBacked):
             if self._matches(entry, metadata, [rname]):
                 data = matching[index].cache[1][entry.tag][rname]
                 break
+        else:
+            # Fall back on __getitem__. Required if override used
+            data = matching[index].cache[1][entry.tag][entry.get('name')]
         if '__text__' in data:
             entry.text = data['__text__']
         if '__children__' in data:
@@ -946,15 +951,18 @@ class SpecificData(object):
             return
         try:
             self.data = open(self.name).read()
+        except UnicodeDecodeError:
+            self.data = open(self.name, mode='rb').read()
         except:
             logger.error("Failed to read file %s" % self.name)
 
 
-class EntrySet(object):
+class EntrySet(Debuggable):
     """Entry sets deal with the host- and group-specific entries."""
     ignore = re.compile("^(\.#.*|.*~|\\..*\\.(sw[px])|.*\\.genshi_include)$")
 
     def __init__(self, basename, path, entry_type, encoding):
+        Debuggable.__init__(self, name=basename)
         self.path = path
         self.entry_type = entry_type
         self.entries = {}
@@ -965,14 +973,22 @@ class EntrySet(object):
         pattern += '(G(?P<prio>\d+)_(?P<group>\S+))))?$'
         self.specific = re.compile(pattern)
 
+    def debug_log(self, message, flag=None):
+        if (flag is None and self.debug_flag) or flag:
+            logger.error(message)
+
+    def sort_by_specific(self, one, other):
+        return cmp(one.specific, other.specific)
+
     def get_matching(self, metadata):
         return [item for item in list(self.entries.values())
                 if item.specific.matches(metadata)]
 
-    def best_matching(self, metadata):
+    def best_matching(self, metadata, matching=None):
         """ Return the appropriate interpreted template from the set of
         available templates. """
-        matching = self.get_matching(metadata)
+        if matching is None:
+            matching = self.get_matching(metadata)
 
         hspec = [ent for ent in matching if ent.specific.hostname]
         if hspec:
@@ -1016,26 +1032,32 @@ class EntrySet(object):
             elif action == 'deleted':
                 del self.entries[event.filename]
 
-    def entry_init(self, event):
+    def entry_init(self, event, entry_type=None, specific=None):
         """Handle template and info file creation."""
+        if entry_type is None:
+            entry_type = self.entry_type
+
         if event.filename in self.entries:
             logger.warn("Got duplicate add for %s" % event.filename)
         else:
-            fpath = "%s/%s" % (self.path, event.filename)
+            fpath = os.path.join(self.path, event.filename)
             try:
-                spec = self.specificity_from_filename(event.filename)
+                spec = self.specificity_from_filename(event.filename,
+                                                      specific=specific)
             except SpecificityError:
                 if not self.ignore.match(event.filename):
                     logger.error("Could not process filename %s; ignoring" %
                                  fpath)
                 return
-            self.entries[event.filename] = self.entry_type(fpath,
-                                                           spec, self.encoding)
+            self.entries[event.filename] = entry_type(fpath, spec,
+                                                      self.encoding)
         self.entries[event.filename].handle_event(event)
 
-    def specificity_from_filename(self, fname):
+    def specificity_from_filename(self, fname, specific=None):
         """Construct a specificity instance from a filename and regex."""
-        data = self.specific.match(fname)
+        if specific is None:
+            specific = self.specific
+        data = specific.match(fname)
         if not data:
             raise SpecificityError(fname)
         kwargs = {}
@@ -1052,7 +1074,7 @@ class EntrySet(object):
 
     def update_metadata(self, event):
         """Process info and info.xml files for the templates."""
-        fpath = "%s/%s" % (self.path, event.filename)
+        fpath = os.path.join(self.path, event.filename)
         if event.filename == 'info.xml':
             if not self.infoxml:
                 self.infoxml = InfoXML(fpath, True)
@@ -1188,60 +1210,7 @@ class GroupSpool(Plugin, Generator):
         name = self.data + relative
         if relative not in list(self.handles.values()):
             if not posixpath.isdir(name):
-                print("Failed to open directory %s" % (name))
+                self.logger.error("Failed to open directory %s" % name)
                 return
             reqid = self.core.fam.AddMonitor(name, self)
             self.handles[reqid] = relative
-
-class SimpleConfig(FileBacked,
-                   ConfigParser.SafeConfigParser):
-    ''' a simple plugin config using ConfigParser '''
-    _required = True
-
-    def __init__(self, plugin):
-        filename = os.path.join(plugin.data, plugin.name.lower() + ".conf")
-        self.plugin = plugin
-        self.fam = self.plugin.core.fam
-        Bcfg2.Server.Plugin.FileBacked.__init__(self, filename)
-        ConfigParser.SafeConfigParser.__init__(self)
-
-        if (self._required or
-            (not self._required and os.path.exists(self.name))):
-            self.fam.AddMonitor(self.name, self)
-
-    def Index(self):
-        """ Build local data structures """
-        for section in self.sections():
-            self.remove_section(section)
-        self.read(self.name)
-
-    def get(self, section, option, **kwargs):
-        """ convenience method for getting config items """
-        default = None
-        if 'default' in kwargs:
-            default = kwargs['default']
-            del kwargs['default']
-        try:
-            return ConfigParser.SafeConfigParser.get(self, section, option,
-                                                     **kwargs)
-        except (ConfigParser.NoSectionError, ConfigParser.NoOptionError):
-            if default is not None:
-                return default
-            else:
-                raise
-
-    def getboolean(self, section, option, **kwargs):
-        """ convenience method for getting boolean config items """
-        default = None
-        if 'default' in kwargs:
-            default = kwargs['default']
-            del kwargs['default']
-        try:
-            return ConfigParser.SafeConfigParser.getboolean(self, section,
-                                                            option, **kwargs)
-        except (ConfigParser.NoSectionError, ConfigParser.NoOptionError,
-                ValueError):
-            if default is not None:
-                return default
-            else:
-                raise

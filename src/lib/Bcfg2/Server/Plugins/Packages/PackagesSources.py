@@ -9,7 +9,7 @@ class PackagesSources(Bcfg2.Server.Plugin.SingleXMLFileBacked,
                       Bcfg2.Server.Plugin.Debuggable):
     __identifier__ = None
 
-    def __init__(self, filename, cachepath, fam, packages, config):
+    def __init__(self, filename, cachepath, fam, packages, setup):
         Bcfg2.Server.Plugin.Debuggable.__init__(self)
         try:
             Bcfg2.Server.Plugin.SingleXMLFileBacked.__init__(self,
@@ -24,7 +24,7 @@ class PackagesSources(Bcfg2.Server.Plugin.SingleXMLFileBacked,
             raise Bcfg2.Server.Plugin.PluginInitError(msg)
         Bcfg2.Server.Plugin.StructFile.__init__(self, filename)
         self.cachepath = cachepath
-        self.config = config
+        self.setup = setup
         if not os.path.exists(self.cachepath):
             # create cache directory if needed
             try:
@@ -35,7 +35,6 @@ class PackagesSources(Bcfg2.Server.Plugin.SingleXMLFileBacked,
                                   (self.cachepath, err))
         self.pkg_obj = packages
         self.parsed = set()
-        self.loaded = False
 
     def toggle_debug(self):
         Bcfg2.Server.Plugin.Debuggable.toggle_debug(self)
@@ -57,10 +56,13 @@ class PackagesSources(Bcfg2.Server.Plugin.SingleXMLFileBacked,
                     self.parsed.add(fname)
                     break
 
-        if sorted(list(self.parsed)) == sorted(self.extras):
+        if self.loaded:
             self.logger.info("Reloading Packages plugin")
             self.pkg_obj.Reload()
-            self.loaded = True
+
+    @property
+    def loaded(self):
+        return sorted(list(self.parsed)) == sorted(self.extras)
 
     def Index(self):
         Bcfg2.Server.Plugin.SingleXMLFileBacked.Index(self)
@@ -85,11 +87,12 @@ class PackagesSources(Bcfg2.Server.Plugin.SingleXMLFileBacked,
                              stype.title())
             cls = getattr(module, "%sSource" % stype.title())
         except (ImportError, AttributeError):
-            self.logger.error("Packages: Unknown source type %s" % stype)
+            ex = sys.exc_info()[1]
+            self.logger.error("Packages: Unknown source type %s (%s)" % (stype, ex))
             return None
 
         try:
-            source = cls(self.cachepath, xsource, self.config)
+            source = cls(self.cachepath, xsource, self.setup)
         except SourceInitError:
             err = sys.exc_info()[1]
             self.logger.error("Packages: %s" % err)
@@ -104,4 +107,7 @@ class PackagesSources(Bcfg2.Server.Plugin.SingleXMLFileBacked,
         return "PackagesSources: %s" % repr(self.entries)
 
     def __str__(self):
-        return "PackagesSources: %s" % str(self.entries)
+        return "PackagesSources: %s sources" % len(self.entries)
+
+    def __len__(self):
+        return len(self.entries)

@@ -10,12 +10,12 @@ import Bcfg2.Server.Plugin
 from Bcfg2.Bcfg2Py3k import ConfigParser, urlopen
 from Bcfg2.Server.Plugins.Packages import Collection
 from Bcfg2.Server.Plugins.Packages.PackagesSources import PackagesSources
-from Bcfg2.Server.Plugins.Packages.PackagesConfig import PackagesConfig
 
 class Packages(Bcfg2.Server.Plugin.Plugin,
                Bcfg2.Server.Plugin.StructureValidator,
                Bcfg2.Server.Plugin.Generator,
-               Bcfg2.Server.Plugin.Connector):
+               Bcfg2.Server.Plugin.Connector,
+               Bcfg2.Server.Plugin.GoalValidator):
     name = 'Packages'
     conflicts = ['Pkgmgr']
     experimental = True
@@ -35,11 +35,9 @@ class Packages(Bcfg2.Server.Plugin.Plugin,
             # create key directory if needed
             os.makedirs(self.keypath)
 
-        # set up config files
-        self.config = PackagesConfig(self)
         self.sources = PackagesSources(os.path.join(self.data, "sources.xml"),
                                        self.cachepath, core.fam, self,
-                                       self.config)
+                                       self.core.setup)
 
     def toggle_debug(self):
         Bcfg2.Server.Plugin.Plugin.toggle_debug(self)
@@ -47,8 +45,12 @@ class Packages(Bcfg2.Server.Plugin.Plugin,
 
     @property
     def disableResolver(self):
+        if self.disableMetaData:
+            # disabling metadata without disabling the resolver Breaks
+            # Things
+            return True
         try:
-            return not self.config.getboolean("global", "resolver")
+            return not self.core.setup.cfp.getboolean("packages", "resolver")
         except (ConfigParser.NoSectionError, ConfigParser.NoOptionError):
             return False
         except ValueError:
@@ -56,28 +58,29 @@ class Packages(Bcfg2.Server.Plugin.Plugin,
             # "disabled", which are not handled according to the
             # Python docs but appear to be handled properly by
             # ConfigParser in at least some versions
-            return self.config.get("global", "resolver",
-                                   default="enabled").lower() == "disabled"
+            return self.core.setup.cfp.get("packages", "resolver",
+                                           default="enabled").lower() == "disabled"
 
     @property
     def disableMetaData(self):
         try:
-            return not self.config.getboolean("global", "resolver")
+            return not self.core.setup.cfp.getboolean("packages", "resolver")
         except (ConfigParser.NoSectionError, ConfigParser.NoOptionError):
             return False
         except ValueError:
             # for historical reasons we also accept "enabled" and
             # "disabled"
-            return self.config.get("global", "metadata",
-                                   default="enabled").lower() == "disabled"
+            return self.core.setup.cfp.get("packages", "metadata",
+                                           default="enabled").lower() == "disabled"
 
     def create_config(self, entry, metadata):
         """ create yum/apt config for the specified host """
-        attrib = {'encoding': 'ascii',
-                  'owner': 'root',
-                  'group': 'root',
-                  'type': 'file',
-                  'perms': '0644'}
+        attrib = dict(encoding='ascii',
+                      owner='root',
+                      group='root',
+                      type='file',
+                      perms='0644',
+                      important='true')
 
         collection = self._get_collection(metadata)
         entry.text = collection.get_config()
@@ -87,22 +90,23 @@ class Packages(Bcfg2.Server.Plugin.Plugin,
     def HandleEntry(self, entry, metadata):
         if entry.tag == 'Package':
             collection = self._get_collection(metadata)
-            entry.set('version', 'auto')
-            entry.set('version', self.config.get("global",
+            entry.set('version', self.core.setup.cfp.get("packages",
                                                  "version",
                                                  default="auto"))
             entry.set('type', collection.ptype)
         elif entry.tag == 'Path':
-            if (entry.get("name") == self.config.get("global", "yum_config",
-                                                     default="") or
-                entry.get("name") == self.config.get("global", "apt_config",
-                                                     default="")):
+            if (entry.get("name") == self.core.setup.cfp.get("packages",
+                                                             "yum_config",
+                                                             default="") or
+                entry.get("name") == self.core.setup.cfp.get("packages",
+                                                             "apt_config",
+                                                             default="")):
                 self.create_config(entry, metadata)
 
     def HandlesEntry(self, entry, metadata):
         if entry.tag == 'Package':
-            if self.config.getboolean("global", "magic_groups",
-                                      default=True) == True:
+            if self.core.setup.cfp.getboolean("packages", "magic_groups",
+                                              default=True):
                 collection = self._get_collection(metadata)
                 if collection.magic_groups_match():
                     return True
@@ -110,10 +114,12 @@ class Packages(Bcfg2.Server.Plugin.Plugin,
                 return True
         elif entry.tag == 'Path':
             # managed entries for yum/apt configs
-            if (entry.get("name") == self.config.get("global", "yum_config",
-                                                     default="") or
-                entry.get("name") == self.config.get("global", "apt_config",
-                                                     default="")):
+            if (entry.get("name") == self.core.setup.cfp.get("packages",
+                                                             "yum_config",
+                                                             default="") or
+                entry.get("name") == self.core.setup.cfp.get("packages",
+                                                             "apt_config",
+                                                             default="")):
                 return True
         return False
 
@@ -183,8 +189,9 @@ class Packages(Bcfg2.Server.Plugin.Plugin,
         newpkgs.sort()
         for pkg in newpkgs:
             lxml.etree.SubElement(independent, 'BoundPackage', name=pkg,
-                                  version=self.config.get("global", "version",
-                                                          default="auto"),
+                                  version=self.core.setup.cfp.get("packages",
+                                                                  "version",
+                                                                  default="auto"),
                                   type=collection.ptype, origin='Packages')
 
     def Refresh(self):
@@ -267,3 +274,11 @@ class Packages(Bcfg2.Server.Plugin.Plugin,
     def get_additional_data(self, metadata):
         collection = self._get_collection(metadata)
         return dict(sources=collection.get_additional_data())
+
+    def validate_goals(self, metadata, _):
+        """ we abuse the GoalValidator plugin since validate_goals()
+        is the very last thing called during a client config run.  so
+        we use this to clear the collection cache for this client,
+        which must persist only the duration of a client run """
+        if metadata.hostname in Collection.clients:
+            del Collection.clients[metadata.hostname]

@@ -62,46 +62,19 @@ def get_errorhandler(config):
 def load_server(setup):
     """ load server """
     core = Bcfg2.Server.Core.Core(setup['repo'], setup['plugins'],
-                                  setup['password'], setup['encoding'])
-    if setup['event debug']:
-        core.fam.debug = True
+                                  setup['password'], setup['encoding'],
+                                  filemonitor=setup['filemonitor'],
+                                  setup=setup)
     core.fam.handle_events_in_interval(4)
     return core
 
 if __name__ == '__main__':
-    optinfo = {
-        'configfile': Bcfg2.Options.CFILE,
-        'help': Bcfg2.Options.HELP,
-        'verbose': Bcfg2.Options.VERBOSE,
-              }
-    optinfo.update({
-        'event debug': Bcfg2.Options.DEBUG,
-        'encoding': Bcfg2.Options.ENCODING,
-        # Server options
-        'repo': Bcfg2.Options.SERVER_REPOSITORY,
-        'plugins': Bcfg2.Options.SERVER_PLUGINS,
-        'mconnect': Bcfg2.Options.SERVER_MCONNECT,
-        'filemonitor': Bcfg2.Options.SERVER_FILEMONITOR,
-        'location': Bcfg2.Options.SERVER_LOCATION,
-        'static': Bcfg2.Options.SERVER_STATIC,
-        'key': Bcfg2.Options.SERVER_KEY,
-        'cert': Bcfg2.Options.SERVER_CERT,
-        'ca': Bcfg2.Options.SERVER_CA,
-        'password': Bcfg2.Options.SERVER_PASSWORD,
-        'protocol': Bcfg2.Options.SERVER_PROTOCOL,
-        # More options
-        'logging': Bcfg2.Options.LOGGING_FILE_PATH,
-        'stdin': Bcfg2.Options.FILES_ON_STDIN,
-        'schema': Bcfg2.Options.SCHEMA_PATH,
-        'config': Bcfg2.Options.Option('Specify bcfg2-lint configuration file',
-                                       '/etc/bcfg2-lint.conf', 
-                                       cmd='--lint-config',
-                                       odesc='<conffile>',
-                                       long_arg=True),
-        'showerrors': Bcfg2.Options.Option('Show error handling', False,
-                                           cmd='--list-errors',
-                                           long_arg=True),
-        })
+    optinfo = dict(config=Bcfg2.Options.LINT_CONFIG,
+                   showerrors=Bcfg2.Options.LINT_SHOW_ERRORS,
+                   stdin=Bcfg2.Options.LINT_FILES_ON_STDIN,
+                   schema=Bcfg2.Options.SCHEMA_PATH)
+    optinfo.update(Bcfg2.Options.CLI_COMMON_OPTIONS)
+    optinfo.update(Bcfg2.Options.SERVER_COMMON_OPTIONS)
     setup = Bcfg2.Options.OptionParser(optinfo)
     setup.parse(sys.argv[1:])
 
@@ -113,21 +86,6 @@ if __name__ == '__main__':
     config = ConfigParser.SafeConfigParser()
     config.read(setup['configfile'])
     config.read(setup['config'])
-
-    if setup['showerrors']:
-        if config.has_section("errors"):
-            econf = dict(config.items("errors"))
-        else:
-            econf = dict()
-
-        print("%-35s %-35s" % ("Error name", "Handler (Default)"))
-        for err, default in Bcfg2.Server.Lint.ErrorHandler._errors.items():
-            if err in econf and econf[err] != default:
-                handler = "%s (%s)" % (econf[err], default)
-            else:
-                handler = default
-            print("%-35s %-35s" % (err, handler))
-        raise SystemExit(0)
 
     # get list of plugins to run
     if setup['args']:
@@ -168,6 +126,15 @@ if __name__ == '__main__':
             serverlessplugins[plugin_name] = plugin
 
     errorhandler = get_errorhandler(config)
+
+    if setup['showerrors']:
+        for plugin in serverplugins.values() + serverlessplugins.values():
+            errorhandler.RegisterErrors(getattr(plugin, 'Errors')())
+
+        print("%-35s %-35s" % ("Error name", "Handler"))
+        for err, handler in errorhandler._handlers.items():
+            print("%-35s %-35s" % (err, handler.__name__))
+        raise SystemExit(0)
 
     run_serverless_plugins(serverlessplugins,
                            errorhandler=errorhandler,

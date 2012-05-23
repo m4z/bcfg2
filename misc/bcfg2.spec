@@ -46,12 +46,11 @@ BuildRequires:    libsane1
 BuildRequires:    python-sphinx10
 # the python-sphinx10 package doesn't set sys.path correctly, so we
 # have to do it for them
-%define pythonpath %(find /usr/lib/python%{py_ver}/site-packages -name %Sphinx*.egg)
+%define pythonpath %(find %{python_sitelib} -name Sphinx*.egg)
 %else
 BuildRequires:    python-sphinx >= 0.6
 %endif
 
-Requires:         python-nose
 Requires:         python-lxml >= 0.9
 %if 0%{?rhel_version}
 # the debian init script needs redhat-lsb.
@@ -109,6 +108,7 @@ Requires:         gamin-python
 %endif
 Requires:         /usr/sbin/sendmail
 Requires:         /usr/bin/openssl
+Requires:         python-nose
 
 %description server
 Bcfg2 helps system administrators produce a consistent, reproducible,
@@ -260,13 +260,17 @@ ln -s %{_initrddir}/bcfg2 %{buildroot}%{_sbindir}/rcbcfg2
 ln -s %{_initrddir}/bcfg2-server %{buildroot}%{_sbindir}/rcbcfg2-server
 %endif
 
-mv build/sphinx/html/* %{buildroot}%{_defaultdocdir}/bcfg2-doc-%{version}
-mv build/dtd %{buildroot}%{_defaultdocdir}/bcfg2-doc-%{version}/
+cp -r build/sphinx/html/* %{buildroot}%{_defaultdocdir}/bcfg2-doc-%{version}
+cp -r build/dtd %{buildroot}%{_defaultdocdir}/bcfg2-doc-%{version}/
 
 %{__install} -d %{buildroot}%{apache_conf}/conf.d
 %{__install} -m 644 misc/apache/bcfg2.conf %{buildroot}%{apache_conf}/conf.d/wsgi_bcfg2.conf
 
 %{__mkdir_p} %{buildroot}%{_localstatedir}/cache/bcfg2
+
+# mandriva and RHEL 5 cannot handle %ghost without the file existing,
+# so let's touch a bunch of empty config files
+touch %{buildroot}%{_sysconfdir}/bcfg2.conf %{buildroot}%{_sysconfdir}/bcfg2-web.conf
 
 %clean
 [ "%{buildroot}" != "/" ] && %{__rm} -rf %{buildroot} || exit 2
@@ -290,10 +294,7 @@ mv build/dtd %{buildroot}%{_defaultdocdir}/bcfg2-doc-%{version}/
 %{_sbindir}/rcbcfg2
 %config(noreplace) /var/adm/fillup-templates/sysconfig.bcfg2
 %endif
-%if 0%{?mandriva_version} == 0
-# mandriva (on OBS, at least) can't handle %ghost
-%ghost %attr(0600,root,root) %{_sysconfdir}/bcfg2.conf
-%endif
+%ghost %config(noreplace,missingok) %attr(0600,root,root) %{_sysconfdir}/bcfg2.conf
 
 %files server
 %defattr(-,root,root,-)
@@ -328,9 +329,7 @@ mv build/dtd %{buildroot}%{_defaultdocdir}/bcfg2-doc-%{version}/
 %{_mandir}/man5/bcfg2-lint.conf.5*
 %{_mandir}/man8/*.8*
 %dir %{_prefix}/lib/bcfg2
-%if 0%{?mandriva_version} == 0
-%ghost %attr(0600,root,root) %{_sysconfdir}/bcfg2.conf
-%endif
+%ghost %config(noreplace,missingok) %attr(0600,root,root) %{_sysconfdir}/bcfg2.conf
 
 %files doc
 %defattr(-,root,root,-)
@@ -343,9 +342,7 @@ mv build/dtd %{buildroot}%{_defaultdocdir}/bcfg2-doc-%{version}/
 %dir %{apache_conf}
 %dir %{apache_conf}/conf.d
 %config(noreplace) %{apache_conf}/conf.d/wsgi_bcfg2.conf
-%if 0%{?mandriva_version} == 0
-%ghost %attr(0600,root,root) %{_sysconfdir}/bcfg2-web.conf
-%endif
+%ghost %config(noreplace,missingok) %attr(0640,root,apache) %{_sysconfdir}/bcfg2-web.conf
 
 %post server
 # enable daemon on first install only (not on update).
