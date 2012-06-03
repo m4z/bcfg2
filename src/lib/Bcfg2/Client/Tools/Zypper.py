@@ -2,8 +2,6 @@
 
 import Bcfg2.Client.Tools
 
-# Parts of this plugin are shamelessly ripped out of YUMng and RMPng.
-# Thank you, authors.
 class Zypper(Bcfg2.Client.Tools.PkgTool):
     """zypper package support."""
     name = 'Zypper'
@@ -41,6 +39,17 @@ class Zypper(Bcfg2.Client.Tools.PkgTool):
         # Get the list of the most recent available packages.
         self.available = {}
         self.RefreshPackagesLocally()
+
+    #def __zypperListUpdates(self):
+    #def __zypperSearch(self):
+
+    def __getCurrentVersion(self, pkgname):
+        """Build version string for currently installed package."""
+        old = self.installed[pkgname][0]
+        return (old.get('version') + '-' + old.get('release') + '.' + \
+                old.get('arch'))
+
+    #def __getNewestVersion(self):
 
     def RefreshPackages(self):
         """Create self.installed, the list of currently installed packages.
@@ -104,15 +113,28 @@ class Zypper(Bcfg2.Client.Tools.PkgTool):
                 # Returns "status | repo description | pkgname | \
                 #          oldversion-release | newversion-release | arch"
                 try:
-                    _, _, pkgname, _, newversionrelease, arch = update.strip().split('|')
+                    _, _, pkgname, _, newversionrelease, arch = \
+                            update.strip().split('|')
                 except ValueError:
                     self.logger.info("Zypper: got wrong data")
                 pkgname = pkgname.strip()
                 newversionrelease = newversionrelease.strip()
                 arch = arch.strip()
                 self.available[pkgname] = newversionrelease + '.' + arch
-                self.logger.debug("Zypper: Update to v:%s available for %s" %
-                                 (self.available[pkgname], pkgname))
+
+                #self.logger.debug("Zypper: Update available for %s: %s" %
+                #                 (pkgname, self.available[pkgname]))
+                #old = self.installed[pkgname][0]
+                #self.logger.debug("Zypper: Update available for %s: %s -> %s" %
+                #                 (pkgname,
+                #                  (old.get('version') + '-' + \
+                #                  old.get('release') + '.' + \
+                #                  old.get('arch')),
+                #                  self.available[pkgname]))
+                self.logger.debug("Zypper: Update available for %s: %s -> %s" %
+                                 (pkgname,
+                                  self.__getCurrentVersion(pkgname),
+                                  self.available[pkgname]))
         self.logger.debug("Zypper: End local Refresh")
 
     def VerifyPackage(self, entry, modlist):
@@ -122,42 +144,48 @@ class Zypper(Bcfg2.Client.Tools.PkgTool):
            Returns True if the correct and unmodified version is installed,
                    False otherwise.
         """
+        # TODO refactor
+        pn = entry.get('name')
         #self.logger.debug("Zypper: Verify: %s" % entry.get('name'))
 
-        #for a in entry.attrib:
-        #    # attribs are: name, priority, version, type, uri
-        #    for a in ['version', 'type']:
-        #        self.logger.debug("Zypper: %s=%s" % (a, entry.get(a)))
-        self.logger.debug("Zypper: Verify: %s (t:%s v:%s)" %
-                          (entry.get('name'),
+        # attribs are: name, priority, version, type, uri
+        #self.logger.debug("Zypper: Verify: %s (t:%s v:%s)" %
+        #                  (entry.get('name'),
+        #                   entry.get('type'),
+        #                   entry.get('version')))
+        self.logger.debug("Zypper: Verify: %s (t:%s), Client has v:%s, Server wants v:%s)" %
+                          (pn,
                            entry.get('type'),
+                           self.__getCurrentVersion(pn),
                            entry.get('version')))
 
         if not 'version' in entry.attrib:
         #if not entry.get('version'):
-            self.logger.info("Cannot verify unversioned package %s" %
-               (entry.get('name')))
+            self.logger.info("Cannot verify unversioned package %s" % pn)
             return False
 
-        if entry.get('name') in self.installed:
+        if pn in self.installed:
             # package is already installed, check for correct version etc.
-            if (self.installed[entry.get('name')] == \
+            if (self.installed[pn] == \
                 entry.get('version') or entry.get('version') == 'any'):
                 self.logger.debug("Zypper: Verify: %s is correct version %s" %
-                                  (entry.get('name'),
-                                   self.installed[entry.get('name')]))
+                                  (pn, self.installed[pn]))
                 return True
 
             elif entry.get('version') == 'auto':
                 # TODO what has to be done here?
                 # TODO get most recent version of packages?
-                if entry.get('name') in self.available:
+                if pn in self.available:
+                    #self.logger.debug("Zypper: Verify: update available" + \
+                    #                  " for %s: %s -> %s" %
+                    #                  (pn,
+                    #                   self.installed[pn][0].get('version'),
+                    #                   self.available[pn]))
                     self.logger.debug("Zypper: Verify: update available" + \
                                       " for %s: %s -> %s" %
-                                      (entry.get('name'),
-                                       #self.installed[entry.get('name')].index('version'),
-                                       self.installed[entry.get('name')],
-                                       self.available[entry.get('name')]))
+                                      (pn,
+                                       self.__getCurrentVersion(pn),
+                                       self.available[pn]))
                 #else:
                 #   self.logger.debug("Zypper: Verify: no update for %s" %
                 #                      entry.get('name'))
@@ -166,14 +194,13 @@ class Zypper(Bcfg2.Client.Tools.PkgTool):
             else:
                 self.logger.info("  %s: Wrong version installed.  "
                                  "Want %s, but have %s" %
-                                 (entry.get("name"),
+                                 (pn,
                                   entry.get("version"),
-                                  self.installed[entry.get("name")]))
+                                  self.installed[pn]))
                 return False
         else:
             # package is not installed on the client.
-            self.logger.debug("Zypper: Verify: %s is missing" %
-                              entry.get('name'))
+            self.logger.debug("Zypper: Verify: %s is missing" % pn)
             return False
 
     #            entry.set('current_version', self.installed[entry.get('name')])
