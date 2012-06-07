@@ -53,7 +53,7 @@ class Zypper(Bcfg2.Client.Tools.PkgTool):
 
     def __getNewestVersion(self, pkgname):
         """Return <version>-<release>.<arch> for package."""
-        versions = self.cmd.run("/usr/bin/zypper --quiet --non-interactive se -t package -s --match-exact %s" %
+        versions = self.cmd.run("/usr/bin/zypper --quiet --non-interactive search -t package -s --match-exact %s" %
                                 pkgname)[1]
         currentversion = self.__getCurrentVersion(pkgname).rsplit('.', 1)[0]
         newestversion = currentversion
@@ -82,9 +82,6 @@ class Zypper(Bcfg2.Client.Tools.PkgTool):
                 # we cannot add the '.arch' suffix yet.
                 thisversion = versionrelease
 
-                # negative: current is older
-                # positive: current is newer
-                # zero: both versions are equal
                 vcmp = self.__vcmp(currentversion, thisversion)
                 if vcmp == -1:
                     self.logger.debug("Zypper: Newest: Update available for %s: %s -> %s" %
@@ -113,7 +110,7 @@ class Zypper(Bcfg2.Client.Tools.PkgTool):
         # negative: current is older
         # positive: current is newer
         # zero: both versions are equal
-        vcmp = self.cmd.run("zypper --terse versioncmp %s %s" %
+        vcmp = self.cmd.run("/usr/bin/zypper --terse versioncmp %s %s" %
                             (ver1, ver2))[1][0]
         #self.logger.debug("Zypper: vcmp: %s" % vcmp)
         return int(vcmp)
@@ -128,7 +125,7 @@ class Zypper(Bcfg2.Client.Tools.PkgTool):
                                          'release':'...', 'arch':'...'},
                                         {...} ]
         """
-        self.logger.debug("Zypper: Begin Refresh")
+        #self.logger.debug("Zypper: Begin Refresh")
         pkgcache = self.cmd.run("/bin/rpm --query --all")[1]
         self.installed = {}
         for pkg in pkgcache:
@@ -148,25 +145,22 @@ class Zypper(Bcfg2.Client.Tools.PkgTool):
             currentpkg['version'] = version
             currentpkg['release'] = release
             if arch is not None:
-                #self.installed[pkgname] = version + '-' + release + '.' + arch
                 currentpkg['arch'] = arch
-                #self.logger.debug("Zypper: pkg:     p:%s  v:%s  r:%s  (a:%s)" %
-                #                  (pkgname, version, release, arch))
             else:
-                #self.installed[pkgname] = version + '-' + release
                 currentpkg['arch'] = 'noarch'
-                #self.logger.debug("Zypper: gpg-pkg: p:%s  v:%s  r:%s" %
-                #                  (pkgname, version, release))
+            #self.logger.debug("Zypper: pkg:     p:%s  v:%s  r:%s  (a:%s)" %
+            #                  (pkgname, version, release, arch))
             self.installed.setdefault(pkgname, []).append(currentpkg)
             #self.logger.debug("Zypper:    %s" % currentpkg)
-        self.logger.debug("Zypper: End Refresh")
+        #self.logger.debug("Zypper: End Refresh")
 
     # TODO this takes a moment, so maybe we should log an info msg.
     def RefreshPackagesLocally(self):
         """Get list of newest available packages."""
-        self.logger.debug("Zypper: Begin local Refresh")
+        #self.logger.debug("Zypper: Begin local Refresh")
         # Force a refresh now, because depending on the zypper configuration,
         # the metadata might be old.
+        # TODO there *must* be a smarter way.
         refreshnow = self.cmd.run("/usr/bin/zypper --quiet --non-interactive \
                                   refresh --force")
         updates_available = \
@@ -191,14 +185,11 @@ class Zypper(Bcfg2.Client.Tools.PkgTool):
                 arch = arch.strip()
                 self.available[pkgname] = newversionrelease + '.' + arch
 
-                #self.logger.debug("Zypper: Update available for %s: %s" %
-                #                 (pkgname, self.available[pkgname]))
-                #old = self.installed[pkgname][0]
                 self.logger.debug("Zypper: Update available for %s: %s -> %s" %
                                  (pkgname,
                                   self.__getCurrentVersion(pkgname),
                                   self.available[pkgname]))
-        self.logger.debug("Zypper: End local Refresh")
+        #self.logger.debug("Zypper: End local Refresh")
 
     def VerifyPackage(self, entry, modlist):
         """Verify Package status for entry, by comparing the versions the server
@@ -210,7 +201,6 @@ class Zypper(Bcfg2.Client.Tools.PkgTool):
         # TODO refactor
         pn = entry.get('name')
         cur = self.__getCurrentVersion(pn)
-        #self.logger.debug("Zypper: Verify: %s" % entry.get('name'))
 
         # attribs are: name, priority, version, type, uri
         self.logger.debug("Zypper: Verify: %s (t:%s), Client has v:%s, Server wants v:%s)" %
@@ -247,7 +237,7 @@ class Zypper(Bcfg2.Client.Tools.PkgTool):
                     newest = self.__getNewestVersion(pn)
                     if cur == newest:
                         #self.logger.debug("Zypper: Verify: no update for %s" %
-                        #                  entry.get('name'))
+                        #                  pn)
                         return True
                     # current is not newest. i am confused.
                     else:
@@ -264,14 +254,11 @@ class Zypper(Bcfg2.Client.Tools.PkgTool):
             self.logger.debug("Zypper: Verify: %s is missing" % pn)
             return False
 
-    #            entry.set('current_version', self.installed[entry.get('name')])
-    #            return False
-    #    entry.set('current_exists', 'false')
-    #    return False
-
     def RemovePackages(self, packages):
         """Remove extra packages."""
-        pass
+        for pkg in packages:
+            self.logger.info("Removing packages: %s" % " ".join(names))
+            self.cmd.run("/usr/bin/zypper --quiet --non-interactive remove %s" % pkg
     #    names = [pkg.get('name') for pkg in packages]
     #    self.logger.info("Removing packages: %s" % " ".join(names))
     #    self.cmd.run("/usr/bin/zypper remove --type package --clean-deps %s" %
