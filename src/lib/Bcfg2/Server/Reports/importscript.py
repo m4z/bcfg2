@@ -7,6 +7,7 @@ new statistics engine
 import binascii
 import os
 import sys
+import traceback
 try:
     import Bcfg2.Server.Reports.settings
 except Exception:
@@ -28,7 +29,8 @@ from getopt import getopt, GetoptError
 from datetime import datetime
 from time import strptime
 from django.db import connection
-from Bcfg2.Server.Reports.updatefix import update_database
+from Bcfg2.Server.Plugins.Metadata import ClientMetadata
+from Bcfg2.Server.Reports.Updater import update_database, UpdaterError
 import logging
 import Bcfg2.Logger
 import platform
@@ -87,129 +89,130 @@ def build_reason_kwargs(r_ent, encoding, logger):
                 unpruned=unpruned_entries)
 
 
-def load_stats(cdata, sdata, encoding, vlevel, logger, quick=False, location=''):
-    clients = {}
-    [clients.__setitem__(c.name, c) \
-        for c in Client.objects.all()]
-
-    pingability = {}
-    [pingability.__setitem__(n.get('name'), n.get('pingable', default='N')) \
-        for n in cdata.findall('Client')]
-
+def load_stats(sdata, encoding, vlevel, logger, quick=False, location=''):
     for node in sdata.findall('Node'):
         name = node.get('name')
-        c_inst, created = Client.objects.get_or_create(name=name)
-        if vlevel > 0:
-            logger.info("Client %s added to db" % name)
-        clients[name] = c_inst
-        try:
-            pingability[name]
-        except KeyError:
-            pingability[name] = 'N'
         for statistics in node.findall('Statistics'):
-            timestamp = datetime(*strptime(statistics.get('time'))[0:6])
-            ilist = Interaction.objects.filter(client=c_inst,
-                                               timestamp=timestamp)
-            if ilist:
-                current_interaction = ilist[0]
-                if vlevel > 0:
-                    logger.info("Interaction for %s at %s with id %s already exists" % \
-                        (c_inst.id, timestamp, current_interaction.id))
-                continue
-            else:
-                newint = Interaction(client=c_inst,
-                                     timestamp=timestamp,
-                                     state=statistics.get('state',
+            load_stat(name, statistics, encoding, vlevel, logger, quick, location)
+        
+def load_stat(cobj, statistics, encoding, vlevel, logger, quick, location):
+    if isinstance(cobj, ClientMetadata):
+        client_name = cobj.hostname
+    else:
+        client_name = cobj
+    client, created = Client.objects.get_or_create(name=client_name)
+    if created and vlevel > 0:
+        logger.info("Client %s added to db" % client_name)
+
+    timestamp = datetime(*strptime(statistics.get('time'))[0:6])
+    ilist = Interaction.objects.filter(client=client,
+                                       timestamp=timestamp)
+    if ilist:
+        current_interaction = ilist[0]
+        if vlevel > 0:
+            logger.info("Interaction for %s at %s with id %s already exists" % \
+                (client.id, timestamp, current_interaction.id))
+        return
+    else:
+        newint = Interaction(client=client,
+                             timestamp=timestamp,
+                             state=statistics.get('state',
+                                                  default="unknown"),
+                             repo_rev_code=statistics.get('revision',
                                                           default="unknown"),
-                                     repo_rev_code=statistics.get('revision',
-                                                                  default="unknown"),
-                                     goodcount=statistics.get('good',
-                                                              default="0"),
-                                     totalcount=statistics.get('total',
-                                                               default="0"),
-                                     server=location)
-                newint.save()
-                current_interaction = newint
-                if vlevel > 0:
-                    logger.info("Interaction for %s at %s with id %s INSERTED in to db" % (c_inst.id,
-                        timestamp, current_interaction.id))
+                             goodcount=statistics.get('good',
+                                                      default="0"),
+                             totalcount=statistics.get('total',
+                                                       default="0"),
+                             server=location)
+        newint.save()
+        current_interaction = newint
+        if vlevel > 0:
+            logger.info("Interaction for %s at %s with id %s INSERTED in to db" % (client.id,
+                timestamp, current_interaction.id))
 
-            counter_fields = {TYPE_CHOICES[0]: 0,
-                              TYPE_CHOICES[1]: 0,
-                              TYPE_CHOICES[2]: 0}
-            pattern = [('Bad/*', TYPE_CHOICES[0]),
-                       ('Extra/*', TYPE_CHOICES[2]),
-                       ('Modified/*', TYPE_CHOICES[1])]
-            for (xpath, type) in pattern:
-                for x in statistics.findall(xpath):
-                    counter_fields[type] = counter_fields[type] + 1
-                    kargs = build_reason_kwargs(x, encoding, logger)
-
-                    try:
-                        rr = None
-                        try:
-                            rr = Reason.objects.filter(**kargs)[0]
-                        except IndexError:
-                            rr = Reason(**kargs)
-                            rr.save()
-                            if vlevel > 0:
-                                logger.info("Created reason: %s" % rr.id)
-                    except Exception:
-                        ex = sys.exc_info()[1]
-                        logger.error("Failed to create reason for %s: %s" % (x.get('name'), ex))
-                        rr = Reason(current_exists=x.get('current_exists',
-                                                         default="True").capitalize() == "True")
-                        rr.save()
-
-                    entry, created = Entries.objects.get_or_create(\
-                        name=x.get('name'), kind=x.tag)
-
-                    Entries_interactions(entry=entry, reason=rr,
-                                         interaction=current_interaction,
-                                         type=type[0]).save()
-                    if vlevel > 0:
-                        logger.info("%s interaction created with reason id %s and entry %s" % (xpath, rr.id, entry.id))
-
-            # Update interaction counters
-            current_interaction.bad_entries = counter_fields[TYPE_CHOICES[0]]
-            current_interaction.modified_entries = counter_fields[TYPE_CHOICES[1]]
-            current_interaction.extra_entries = counter_fields[TYPE_CHOICES[2]]
-            current_interaction.save()
-
-            mperfs = []
-            for times in statistics.findall('OpStamps'):
-                for metric, value in list(times.items()):
-                    mmatch = []
-                    if not quick:
-                        mmatch = Performance.objects.filter(metric=metric, value=value)
-
-                    if mmatch:
-                        mperf = mmatch[0]
-                    else:
-                        mperf = Performance(metric=metric, value=value)
-                        mperf.save()
-                    mperfs.append(mperf)
-            current_interaction.performance_items.add(*mperfs)
-
-    for key in list(pingability.keys()):
-        if key not in clients:
-            continue
+    if isinstance(cobj, ClientMetadata):
         try:
-            pmatch = Ping.objects.filter(client=clients[key]).order_by('-endtime')[0]
-            if pmatch.status == pingability[key]:
-                pmatch.endtime = datetime.now()
-                pmatch.save()
-                continue
-        except IndexError:
-            pass
-        Ping(client=clients[key], status=pingability[key],
-             starttime=datetime.now(),
-             endtime=datetime.now()).save()
+            imeta = InteractionMetadata(interaction=current_interaction)
+            profile, created = Group.objects.get_or_create(name=cobj.profile)
+            imeta.profile = profile
+            imeta.save() # save here for m2m
 
-    if vlevel > 1:
-        logger.info("---------------PINGDATA SYNCED---------------------")
+            #FIXME - this should be more efficient
+            group_set = []
+            for group_name in cobj.groups:
+                group, created = Group.objects.get_or_create(name=group_name)
+                if created:
+                    logger.debug("Added group %s" % group)
+                imeta.groups.add(group)
+            for bundle_name in cobj.bundles:
+                bundle, created = Bundle.objects.get_or_create(name=bundle_name)
+                if created:
+                    logger.debug("Added bundle %s" % bundle)
+                imeta.bundles.add(bundle)
+            imeta.save()
+        except:
+            logger.error("Failed to save interaction metadata for %s: %s" %
+                (client_name, traceback.format_exc().splitlines()[-1]))
 
-    #Clients are consistent
+
+    counter_fields = {TYPE_CHOICES[0]: 0,
+                      TYPE_CHOICES[1]: 0,
+                      TYPE_CHOICES[2]: 0}
+    pattern = [('Bad/*', TYPE_CHOICES[0]),
+               ('Extra/*', TYPE_CHOICES[2]),
+               ('Modified/*', TYPE_CHOICES[1])]
+    for (xpath, type) in pattern:
+        for x in statistics.findall(xpath):
+            counter_fields[type] = counter_fields[type] + 1
+            kargs = build_reason_kwargs(x, encoding, logger)
+
+            try:
+                rr = None
+                try:
+                    rr = Reason.objects.filter(**kargs)[0]
+                except IndexError:
+                    rr = Reason(**kargs)
+                    rr.save()
+                    if vlevel > 0:
+                        logger.info("Created reason: %s" % rr.id)
+            except Exception:
+                ex = sys.exc_info()[1]
+                logger.error("Failed to create reason for %s: %s" % (x.get('name'), ex))
+                rr = Reason(current_exists=x.get('current_exists',
+                                                 default="True").capitalize() == "True")
+                rr.save()
+
+            entry, created = Entries.objects.get_or_create(\
+                name=x.get('name'), kind=x.tag)
+
+            Entries_interactions(entry=entry, reason=rr,
+                                 interaction=current_interaction,
+                                 type=type[0]).save()
+            if vlevel > 0:
+                logger.info("%s interaction created with reason id %s and entry %s" % (xpath, rr.id, entry.id))
+
+    # Update interaction counters
+    current_interaction.bad_entries = counter_fields[TYPE_CHOICES[0]]
+    current_interaction.modified_entries = counter_fields[TYPE_CHOICES[1]]
+    current_interaction.extra_entries = counter_fields[TYPE_CHOICES[2]]
+    current_interaction.save()
+
+    mperfs = []
+    for times in statistics.findall('OpStamps'):
+        for metric, value in list(times.items()):
+            mmatch = []
+            if not quick:
+                mmatch = Performance.objects.filter(metric=metric, value=value)
+
+            if mmatch:
+                mperf = mmatch[0]
+            else:
+                mperf = Performance(metric=metric, value=value)
+                mperf.save()
+            mperfs.append(mperf)
+    current_interaction.performance_items.add(*mperfs)
+
 
 if __name__ == '__main__':
     from sys import argv
@@ -231,18 +234,17 @@ if __name__ == '__main__':
     except GetoptError:
         mesg = sys.exc_info()[1]
         # print help information and exit:
-        print("%s\nUsage:\nimportscript.py [-h] [-v] [-u] [-d] [-S] [-C bcfg2 config file] [-c clients-file] [-s statistics-file]" % (mesg))
+        print("%s\nUsage:\nimportscript.py [-h] [-v] [-u] [-d] [-S] [-C bcfg2 config file] [-s statistics-file]" % (mesg))
         raise SystemExit(2)
 
     for o, a in opts:
         if o in ("-h", "--help"):
-            print("Usage:\nimportscript.py [-h] [-v] -c <clients-file> -s <statistics-file> \n")
+            print("Usage:\nimportscript.py [-h] [-v] -s <statistics-file> \n")
             print("h : help; this message")
             print("v : verbose; print messages on record insertion/skip")
             print("u : updates; print status messages as items inserted semi-verbose")
             print("d : debug; print most SQL used to manipulate database")
             print("C : path to bcfg2.conf config file.")
-            print("c : clients.xml file")
             print("s : statistics.xml file")
             print("S : syslog; output to syslog")
             raise SystemExit
@@ -256,7 +258,7 @@ if __name__ == '__main__':
         if o in ("-d", "--debug"):
             verb = 3
         if o in ("-c", "--clients"):
-            clientspath = a
+            print "DeprecationWarning: %s is no longer used" % o
 
         if o in ("-s", "--stats"):
             statpath = a
@@ -267,7 +269,7 @@ if __name__ == '__main__':
     logging.getLogger().setLevel(logging.INFO)
     Bcfg2.Logger.setup_logging('importscript.py',
                                True,
-                               syslog)
+                               syslog, level=logging.INFO)
 
     cf = ConfigParser.ConfigParser()
     cf.read([cpath])
@@ -289,24 +291,13 @@ if __name__ == '__main__':
     except:
         encoding = 'UTF-8'
 
-    if not clientpath:
-        try:
-            clientspath = "%s/Metadata/clients.xml" % \
-                          cf.get('server', 'repository')
-        except (ConfigParser.NoSectionError, ConfigParser.NoOptionError):
-            print("Could not read bcfg2.conf; exiting")
-            raise SystemExit(1)
-    try:
-        clientsdata = XML(open(clientspath).read())
-    except (IOError, XMLSyntaxError):
-        print("StatReports: Failed to parse %s" % (clientspath))
-        raise SystemExit(1)
-
     q = '-O3' in sys.argv
     # Be sure the database is ready for new schema
-    update_database()
-    load_stats(clientsdata,
-               statsdata,
+    try:
+        update_database()
+    except UpdaterError:
+        raise SystemExit(1)
+    load_stats(statsdata,
                encoding,
                verb,
                logger,

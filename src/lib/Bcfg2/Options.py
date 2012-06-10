@@ -10,17 +10,13 @@ import Bcfg2.Client.Tools
 # Compatibility imports
 from Bcfg2.Bcfg2Py3k import ConfigParser
 
-def bool_cook(x):
-    if x:
-        return True
-    else:
-        return False
 
 class OptionFailure(Exception):
     pass
 
-DEFAULT_CONFIG_LOCATION = '/etc/bcfg2.conf' #/etc/bcfg2.conf
-DEFAULT_INSTALL_PREFIX = '/usr' #/usr
+DEFAULT_CONFIG_LOCATION = '/etc/bcfg2.conf'
+DEFAULT_INSTALL_PREFIX = '/usr'
+
 
 class DefaultConfigParser(ConfigParser.ConfigParser):
     def get(self, section, option, **kwargs):
@@ -80,7 +76,7 @@ class Option(object):
         self.env = env
         self.cf = cf
         self.boolean = False
-        if not odesc and not cook:
+        if not odesc and not cook and isinstance(self.default, bool):
             self.boolean = True
         self.cook = cook
 
@@ -113,7 +109,7 @@ class Option(object):
 
     def buildLongGetopt(self):
         if self.odesc:
-            return self.cmd[2:]+'='
+            return self.cmd[2:] + '='
         else:
             return self.cmd[2:]
 
@@ -143,6 +139,7 @@ class Option(object):
                 pass
         # Default value not cooked
         self.value = self.default
+
 
 class OptionSet(dict):
     def __init__(self, *args, **kwargs):
@@ -205,15 +202,18 @@ class OptionSet(dict):
                 val = option.value
                 self[key] = val
 
+
 def list_split(c_string):
     if c_string:
         return re.split("\s*,\s*", c_string)
     return []
 
+
 def colon_split(c_string):
     if c_string:
         return c_string.split(':')
     return []
+
 
 def get_bool(s):
     # these values copied from ConfigParser.RawConfigParser.getboolean
@@ -227,205 +227,556 @@ def get_bool(s):
     else:
         raise ValueError
 
-# General options
-CFILE = Option('Specify configuration file', DEFAULT_CONFIG_LOCATION, cmd='-C',
-               odesc='<conffile>')
-LOCKFILE = Option('Specify lockfile',
-           "/var/lock/bcfg2.run",
-           cf=('components', 'lockfile'),
-           odesc='<Path to lockfile>')
-HELP = Option('Print this usage message', False, cmd='-h')
-DEBUG = Option("Enable debugging output", False, cmd='-d')
-VERBOSE = Option("Enable verbose output", False, cmd='-v')
-DAEMON = Option("Daemonize process, storing pid", False,
-                cmd='-D', odesc="<pidfile>")
-INSTALL_PREFIX = Option('Installation location', cf=('server', 'prefix'),
-                        default=DEFAULT_INSTALL_PREFIX, odesc='</path>')
-SENDMAIL_PATH = Option('Path to sendmail', cf=('reports', 'sendmailpath'),
-                       default='/usr/lib/sendmail')
-INTERACTIVE = Option('Run interactively, prompting the user for each change',
-                     default=False,
-                     cmd='-I', )
-ENCODING = Option('Encoding of cfg files',
-                  default='UTF-8',
-                  cmd='-E',
-                  odesc='<encoding>',
-                  cf=('components', 'encoding'))
-PARANOID_PATH = Option('Specify path for paranoid file backups',
-                       default='/var/cache/bcfg2', cf=('paranoid', 'path'),
-                       odesc='<paranoid backup path>')
-PARANOID_MAX_COPIES = Option('Specify the number of paranoid copies you want',
-                             default=1, cf=('paranoid', 'max_copies'),
-                             odesc='<max paranoid copies>')
-OMIT_LOCK_CHECK = Option('Omit lock check', default=False, cmd='-O')
-CORE_PROFILE = Option('profile', default=False, cmd='-p', )
-SCHEMA_PATH = Option('Path to XML Schema files', cmd='--schema',
-                     odesc='<schema path>',
-                     default="%s/share/bcfg2/schemas" % DEFAULT_INSTALL_PREFIX,
-                     long_arg=True)
+"""
+Options:
 
-# Metadata options
-MDATA_OWNER = Option('Default Path owner',
-                     default='root', cf=('mdata', 'owner'),
-                     odesc='owner permissions')
-MDATA_GROUP = Option('Default Path group',
-                     default='root', cf=('mdata', 'group'),
-                     odesc='group permissions')
-MDATA_IMPORTANT = Option('Default Path priority (importance)',
-                     default='False', cf=('mdata', 'important'),
-                     odesc='Important entries are installed first')
-MDATA_PERMS = Option('Default Path permissions',
-                     '644', cf=('mdata', 'perms'),
-                     odesc='octal permissions')
-MDATA_PARANOID = Option('Default Path paranoid setting',
-                     'true', cf=('mdata', 'paranoid'),
-                     odesc='Path paranoid setting')
-MDATA_SENSITIVE = Option('Default Path sensitive setting',
-                     'false', cf=('mdata', 'sensitive'),
-                     odesc='Path sensitive setting')
+    Accepts keyword argument list with the following values:
+
+        default:    default value for the option
+        cmd:        command line switch
+        odesc:      option description
+        cf:         tuple containing section/option
+        cook:       method for parsing option
+        long_arg:   (True|False) specifies whether cmd is a long argument
+"""
+# General options
+CFILE = \
+    Option('Specify configuration file',
+           default=DEFAULT_CONFIG_LOCATION,
+           cmd='-C',
+           odesc='<conffile>')
+LOCKFILE = \
+    Option('Specify lockfile',
+           default='/var/lock/bcfg2.run',
+           odesc='<Path to lockfile>',
+           cf=('components', 'lockfile'))
+HELP = \
+    Option('Print this usage message',
+           default=False,
+           cmd='-h')
+DEBUG = \
+    Option("Enable debugging output",
+           default=False,
+           cmd='-d')
+VERBOSE = \
+    Option("Enable verbose output",
+           default=False,
+           cmd='-v')
+DAEMON = \
+    Option("Daemonize process, storing pid",
+           default=None,
+           cmd='-D',
+           odesc='<pidfile>')
+INSTALL_PREFIX = \
+    Option('Installation location',
+           default=DEFAULT_INSTALL_PREFIX,
+           odesc='</path>',
+           cf=('server', 'prefix'))
+SENDMAIL_PATH = \
+    Option('Path to sendmail',
+           default='/usr/lib/sendmail',
+           cf=('reports', 'sendmailpath'))
+INTERACTIVE = \
+    Option('Run interactively, prompting the user for each change',
+           default=False,
+           cmd='-I', )
+ENCODING = \
+    Option('Encoding of cfg files',
+           default='UTF-8',
+           cmd='-E',
+           odesc='<encoding>',
+           cf=('components', 'encoding'))
+PARANOID_PATH = \
+    Option('Specify path for paranoid file backups',
+           default='/var/cache/bcfg2',
+           odesc='<paranoid backup path>',
+           cf=('paranoid', 'path'))
+PARANOID_MAX_COPIES = \
+    Option('Specify the number of paranoid copies you want',
+           default=1,
+           odesc='<max paranoid copies>',
+           cf=('paranoid', 'max_copies'))
+OMIT_LOCK_CHECK = \
+    Option('Omit lock check',
+           default=False,
+           cmd='-O')
+CORE_PROFILE = \
+    Option('profile',
+           default=False,
+           cmd='-p')
+SCHEMA_PATH = \
+    Option('Path to XML Schema files',
+           default='%s/share/bcfg2/schemas' % DEFAULT_INSTALL_PREFIX,
+           cmd='--schema',
+           odesc='<schema path>',
+           long_arg=True)
+
+# Metadata options (mdata section)
+MDATA_OWNER = \
+    Option('Default Path owner',
+           default='root',
+           odesc='owner permissions',
+           cf=('mdata', 'owner'))
+MDATA_GROUP = \
+    Option('Default Path group',
+           default='root',
+           odesc='group permissions',
+           cf=('mdata', 'group'))
+MDATA_IMPORTANT = \
+    Option('Default Path priority (importance)',
+           default='False',
+           odesc='Important entries are installed first',
+           cf=('mdata', 'important'))
+MDATA_PERMS = \
+    Option('Default Path permissions',
+           default='644',
+           odesc='octal permissions',
+           cf=('mdata', 'perms'))
+MDATA_PARANOID = \
+    Option('Default Path paranoid setting',
+           default='true',
+           odesc='Path paranoid setting',
+           cf=('mdata', 'paranoid'))
+MDATA_SENSITIVE = \
+    Option('Default Path sensitive setting',
+           default='false',
+           odesc='Path sensitive setting',
+           cf=('mdata', 'sensitive'))
 
 # Server options
-SERVER_REPOSITORY = Option('Server repository path', '/var/lib/bcfg2',
-                           cf=('server', 'repository'), cmd='-Q',
-                           odesc='<repository path>')
-SERVER_PLUGINS = Option('Server plugin list', cf=('server', 'plugins'),
-                        # default server plugins
-                        default=[
-                                 'Bundler',
-                                 'Cfg',
-                                 'Metadata',
-                                 'Pkgmgr',
-                                 'Rules',
-                                 'SSHbase',
-                                ],
-                        cook=list_split)
-SERVER_MCONNECT = Option('Server Metadata Connector list', cook=list_split,
-                         cf=('server', 'connectors'), default=['Probes'], )
-SERVER_FILEMONITOR = Option('Server file monitor', cf=('server', 'filemonitor'),
-                            default='default', odesc='File monitoring driver')
-SERVER_FAM_IGNORE = Option('File globs to ignore',
-                           cf=('server', 'ignore_files'), cook=list_split,
-                           default=['*~', '.#*', '*#', '*.swp', '.*.swx', 'SCCS',
-                                    '.svn', '4913', '.gitignore'])
-SERVER_LISTEN_ALL = Option('Listen on all interfaces',
-                           cf=('server', 'listen_all'),
-                           cmd='--listen-all',
-                           default=False,
-                           long_arg=True,
-                           cook=get_bool,
-                           odesc='True|False')
-SERVER_LOCATION = Option('Server Location', cf=('components', 'bcfg2'),
-                         default='https://localhost:6789', cmd='-S',
-                         odesc='https://server:port')
-SERVER_STATIC = Option('Server runs on static port', cf=('components', 'bcfg2'),
-                       default=False, cook=bool_cook)
-SERVER_KEY = Option('Path to SSL key', cf=('communication', 'key'),
-                    default=False, cmd='--ssl-key', odesc='<ssl key>',
-                    long_arg=True)
-SERVER_CERT = Option('Path to SSL certificate', default='/etc/bcfg2.key',
-                     cf=('communication', 'certificate'), odesc='<ssl cert>')
-SERVER_CA = Option('Path to SSL CA Cert', default=None,
-                   cf=('communication', 'ca'), odesc='<ca cert>')
-SERVER_PASSWORD = Option('Communication Password', cmd='-x', odesc='<password>',
-                         cf=('communication', 'password'), default=False)
-SERVER_PROTOCOL = Option('Server Protocol', cf=('communication', 'procotol'),
-                         default='xmlrpc/ssl')
+SERVER_REPOSITORY = \
+    Option('Server repository path',
+           default='/var/lib/bcfg2',
+           cmd='-Q',
+           odesc='<repository path>',
+           cf=('server', 'repository'))
+SERVER_PLUGINS = \
+    Option('Server plugin list',
+           # default server plugins
+           default=['Bundler', 'Cfg', 'Metadata', 'Pkgmgr', 'Rules', 'SSHbase'],
+           cf=('server', 'plugins'),
+           cook=list_split)
+SERVER_MCONNECT = \
+    Option('Server Metadata Connector list',
+           default=['Probes'],
+           cf=('server', 'connectors'),
+           cook=list_split)
+SERVER_FILEMONITOR = \
+    Option('Server file monitor',
+           default='default',
+           odesc='File monitoring driver',
+           cf=('server', 'filemonitor'))
+SERVER_FAM_IGNORE = \
+    Option('File globs to ignore',
+           default=['*~', '*#', '.#*', '*.swp', '.*.swx', 'SCCS', '.svn',
+                    '4913', '.gitignore',],
+           cf=('server', 'ignore_files'),
+           cook=list_split)
+SERVER_LISTEN_ALL = \
+    Option('Listen on all interfaces',
+           default=False,
+           cmd='--listen-all',
+           cf=('server', 'listen_all'),
+           cook=get_bool,
+           long_arg=True)
+SERVER_LOCATION = \
+    Option('Server Location',
+           default='https://localhost:6789',
+           cmd='-S',
+           odesc='https://server:port',
+           cf=('components', 'bcfg2'))
+SERVER_STATIC = \
+    Option('Server runs on static port',
+           default=False,
+           cf=('components', 'bcfg2'))
+SERVER_KEY = \
+    Option('Path to SSL key',
+           default=None,
+           cmd='--ssl-key',
+           odesc='<ssl key>',
+           cf=('communication', 'key'),
+           long_arg=True)
+SERVER_CERT = \
+    Option('Path to SSL certificate',
+           default='/etc/bcfg2.key',
+           odesc='<ssl cert>',
+           cf=('communication', 'certificate'))
+SERVER_CA = \
+    Option('Path to SSL CA Cert',
+           default=None,
+           odesc='<ca cert>',
+           cf=('communication', 'ca'))
+SERVER_PASSWORD = \
+    Option('Communication Password',
+           default=None,
+           cmd='-x',
+           odesc='<password>',
+           cf=('communication', 'password'))
+SERVER_PROTOCOL = \
+    Option('Server Protocol',
+           default='xmlrpc/ssl',
+           cf=('communication', 'procotol'))
+
 # Client options
-CLIENT_KEY = Option('Path to SSL key', cf=('communication', 'key'),
-                    default=None, cmd="--ssl-key", odesc='<ssl key>',
-                    long_arg=True)
-CLIENT_CERT = Option('Path to SSL certificate', default=None, cmd="--ssl-cert",
-                     cf=('communication', 'certificate'), odesc='<ssl cert>',
-                     long_arg=True)
-CLIENT_CA = Option('Path to SSL CA Cert', default=None, cmd="--ca-cert",
-                   cf=('communication', 'ca'), odesc='<ca cert>',
-                   long_arg=True)
-CLIENT_SCNS = Option('List of server commonNames', default=None, cmd="--ssl-cns",
-                     cf=('communication', 'serverCommonNames'),
-                     odesc='<commonName1:commonName2>', cook=list_split,
-                     long_arg=True)
-CLIENT_PROFILE = Option('Assert the given profile for the host',
-                        default=False, cmd='-p', odesc="<profile>")
-CLIENT_RETRIES = Option('The number of times to retry network communication',
-                        default='3', cmd='-R', cf=('communication', 'retries'),
-                        odesc="<retry count>")
-CLIENT_DRYRUN = Option('Do not actually change the system',
-                       default=False, cmd='-n', )
-CLIENT_EXTRA_DISPLAY = Option('enable extra entry output',
-                              default=False, cmd='-e', )
-CLIENT_PARANOID = Option('Make automatic backups of config files',
-                         default=False,
-                         cmd='-P',
-                         cook=get_bool,
-                         cf=('client', 'paranoid'))
-CLIENT_DRIVERS = Option('Specify tool driver set', cmd='-D',
-                        cf=('client', 'drivers'),
-                        odesc="<driver1,driver2>", cook=list_split,
-                        default=Bcfg2.Client.Tools.default)
-CLIENT_CACHE = Option('Store the configuration in a file',
-                      default=False, cmd='-c', odesc="<cache path>")
-CLIENT_REMOVE = Option('Force removal of additional configuration items',
-                       default=False, cmd='-r', odesc="<entry type|all>")
-CLIENT_BUNDLE = Option('Only configure the given bundle(s)', default=[],
-                       cmd='-b', odesc='<bundle:bundle>', cook=colon_split)
-CLIENT_BUNDLEQUICK = Option('only verify/configure the given bundle(s)', default=False,
-                       cmd='-Q')
-CLIENT_INDEP = Option('Only configure independent entries, ignore bundles', default=False,
-                       cmd='-z')
-CLIENT_KEVLAR = Option('Run in kevlar (bulletproof) mode', default=False,
-                       cmd='-k', )
-CLIENT_FILE = Option('Configure from a file rather than querying the server',
-                     default=False, cmd='-f', odesc='<specification path>')
-CLIENT_QUICK = Option('Disable some checksum verification', default=False,
-                      cmd='-q', )
-CLIENT_USER = Option('The user to provide for authentication', default='root',
-                     cmd='-u', cf=('communication', 'user'), odesc='<user>')
-CLIENT_SERVICE_MODE = Option('Set client service mode', default='default',
-                             cmd='-s', odesc='<default|disabled|build>')
-CLIENT_TIMEOUT = Option('Set the client XML-RPC timeout', default=90,
-                        cmd='-t', cf=('communication', 'timeout'),
-                        odesc='<timeout>')
-CLIENT_DLIST = Option('Run client in server decision list mode', default='none',
-                      cf=('client', 'decision'),
-                      cmd='-l', odesc='<whitelist|blacklist|none>')
-CLIENT_DECISION_LIST = Option('Decision List', default=False,
-                              cmd="--decision-list", odesc='<file>',
-                              long_arg=True)
+CLIENT_KEY = \
+    Option('Path to SSL key',
+           default=None,
+           cmd='--ssl-key',
+           odesc='<ssl key>',
+           cf=('communication', 'key'),
+           long_arg=True)
+CLIENT_CERT = \
+    Option('Path to SSL certificate',
+           default=None,
+           cmd='--ssl-cert',
+           odesc='<ssl cert>',
+           cf=('communication', 'certificate'),
+           long_arg=True)
+CLIENT_CA = \
+    Option('Path to SSL CA Cert',
+           default=None,
+           cmd='--ca-cert',
+           odesc='<ca cert>',
+           cf=('communication', 'ca'),
+           long_arg=True)
+CLIENT_SCNS = \
+    Option('List of server commonNames',
+           default=None,
+           cmd='--ssl-cns',
+           odesc='<CN1:CN2>',
+           cf=('communication', 'serverCommonNames'),
+           cook=list_split,
+           long_arg=True)
+CLIENT_PROFILE = \
+    Option('Assert the given profile for the host',
+           default=None,
+           cmd='-p',
+           odesc='<profile>')
+CLIENT_RETRIES = \
+    Option('The number of times to retry network communication',
+           default='3',
+           cmd='-R',
+           odesc='<retry count>',
+           cf=('communication', 'retries'))
+CLIENT_DRYRUN = \
+    Option('Do not actually change the system',
+           default=False,
+           cmd='-n')
+CLIENT_EXTRA_DISPLAY = \
+    Option('enable extra entry output',
+           default=False,
+           cmd='-e')
+CLIENT_PARANOID = \
+    Option('Make automatic backups of config files',
+           default=False,
+           cmd='-P',
+           cf=('client', 'paranoid'),
+           cook=get_bool)
+CLIENT_DRIVERS = \
+    Option('Specify tool driver set',
+           default=Bcfg2.Client.Tools.default,
+           cmd='-D',
+           odesc='<driver1,driver2>',
+           cf=('client', 'drivers'),
+           cook=list_split)
+CLIENT_CACHE = \
+    Option('Store the configuration in a file',
+           default=None,
+           cmd='-c',
+           odesc='<cache path>')
+CLIENT_REMOVE = \
+    Option('Force removal of additional configuration items',
+           default=None,
+           cmd='-r',
+           odesc='<entry type|all>')
+CLIENT_BUNDLE = \
+    Option('Only configure the given bundle(s)',
+           default=[],
+           cmd='-b',
+           odesc='<bundle:bundle>',
+           cook=colon_split)
+CLIENT_SKIPBUNDLE = \
+    Option('Configure everything except the given bundle(s)',
+           default=[],
+           cmd='-B',
+           odesc='<bundle:bundle>',
+           cook=colon_split)
+CLIENT_BUNDLEQUICK = \
+    Option('Only verify/configure the given bundle(s)',
+           default=False,
+           cmd='-Q')
+CLIENT_INDEP = \
+    Option('Only configure independent entries, ignore bundles',
+           default=False,
+           cmd='-z')
+CLIENT_SKIPINDEP = \
+    Option('Do not configure independent entries',
+           default=False,
+           cmd='-Z')
+CLIENT_KEVLAR = \
+    Option('Run in kevlar (bulletproof) mode',
+           default=False,
+           cmd='-k', )
+CLIENT_FILE = \
+    Option('Configure from a file rather than querying the server',
+           default=None,
+           cmd='-f',
+           odesc='<specification path>')
+CLIENT_QUICK = \
+    Option('Disable some checksum verification',
+           default=False,
+           cmd='-q')
+CLIENT_USER = \
+    Option('The user to provide for authentication',
+           default='root',
+           cmd='-u',
+           odesc='<user>',
+           cf=('communication', 'user'))
+CLIENT_SERVICE_MODE = \
+    Option('Set client service mode',
+           default='default',
+           cmd='-s',
+           odesc='<default|disabled|build>')
+CLIENT_TIMEOUT = \
+    Option('Set the client XML-RPC timeout',
+           default=90,
+           cmd='-t',
+           odesc='<timeout>',
+           cf=('communication', 'timeout'))
+CLIENT_DLIST = \
+    Option('Run client in server decision list mode',
+           default='none',
+           cmd='-l',
+           odesc='<whitelist|blacklist|none>',
+           cf=('client', 'decision'))
+CLIENT_DECISION_LIST = \
+    Option('Decision List',
+           default=False,
+           cmd='--decision-list',
+           odesc='<file>',
+           long_arg=True)
 
 # bcfg2-test and bcfg2-lint options
-TEST_NOSEOPTS = Option('Options to pass to nosetests', default=[],
-                       cmd='--nose-options', cf=('bcfg2_test', 'nose_options'),
-                       odesc='<opts>', long_arg=True, cook=shlex.split)
-TEST_IGNORE = Option('Ignore these entries if they fail to build.', default=[],
-                     cmd='--ignore',
-                     cf=('bcfg2_test', 'ignore_entries'), long_arg=True,
-                     odesc='<Type>:<name>,<Type>:<name>', cook=list_split)
-LINT_CONFIG = Option('Specify bcfg2-lint configuration file',
-                     '/etc/bcfg2-lint.conf', cmd='--lint-config',
-                     odesc='<conffile>', long_arg=True)
-LINT_SHOW_ERRORS = Option('Show error handling', False, cmd='--list-errors',
-                          long_arg=True)
-LINT_FILES_ON_STDIN = Option('Operate on a list of files supplied on stdin',
-                             cmd='--stdin', default=False, long_arg=True)
+TEST_NOSEOPTS = \
+    Option('Options to pass to nosetests',
+           default=[],
+           cmd='--nose-options',
+           odesc='<opts>',
+           cf=('bcfg2_test', 'nose_options'),
+           cook=shlex.split,
+           long_arg=True)
+TEST_IGNORE = \
+    Option('Ignore these entries if they fail to build.',
+           default=[],
+           cmd='--ignore',
+           odesc='<Type>:<name>,<Type>:<name>',
+           cf=('bcfg2_test', 'ignore_entries'),
+           cook=list_split,
+           long_arg=True)
+LINT_CONFIG = \
+    Option('Specify bcfg2-lint configuration file',
+           default='/etc/bcfg2-lint.conf',
+           cmd='--lint-config',
+           odesc='<conffile>',
+           long_arg=True)
+LINT_SHOW_ERRORS = \
+    Option('Show error handling',
+           default=False,
+           cmd='--list-errors',
+           long_arg=True)
+LINT_FILES_ON_STDIN = \
+    Option('Operate on a list of files supplied on stdin',
+           default=False,
+           cmd='--stdin',
+           long_arg=True)
 
-# APT client tool options
-CLIENT_APT_TOOLS_INSTALL_PATH = Option('Apt tools install path',
-                                       cf=('APT', 'install_path'),
-                                       default='/usr')
-CLIENT_APT_TOOLS_VAR_PATH = Option('Apt tools var path',
-                                   cf=('APT', 'var_path'), default='/var')
-CLIENT_SYSTEM_ETC_PATH = Option('System etc path', cf=('APT', 'etc_path'),
-                                default='/etc')
+# individual client tool options
+CLIENT_APT_TOOLS_INSTALL_PATH = \
+    Option('Apt tools install path',
+           default='/usr',
+           cf=('APT', 'install_path'))
+CLIENT_APT_TOOLS_VAR_PATH = \
+    Option('Apt tools var path',
+           default='/var',
+           cf=('APT', 'var_path'))
+CLIENT_SYSTEM_ETC_PATH = \
+    Option('System etc path',
+           default='/etc',
+           cf=('APT', 'etc_path'))
+CLIENT_PORTAGE_BINPKGONLY = \
+    Option('Portage binary packages only',
+           default=False,
+           cf=('Portage', 'binpkgonly'),
+           cook=get_bool)
+CLIENT_RPMNG_INSTALLONLY = \
+    Option('RPMng install-only packages',
+           default=['kernel', 'kernel-bigmem', 'kernel-enterprise',
+                    'kernel-smp', 'kernel-modules', 'kernel-debug',
+                    'kernel-unsupported', 'kernel-devel', 'kernel-source',
+                    'kernel-default', 'kernel-largesmp-devel',
+                    'kernel-largesmp', 'kernel-xen', 'gpg-pubkey'],
+           cf=('RPMng', 'installonlypackages'),
+           cook=list_split)
+CLIENT_RPMNG_PKG_CHECKS = \
+    Option("Perform RPMng package checks",
+           default=True,
+           cf=('RPMng', 'pkg_checks'),
+           cook=get_bool)
+CLIENT_RPMNG_PKG_VERIFY = \
+    Option("Perform RPMng package verify",
+           default=True,
+           cf=('RPMng', 'pkg_verify'),
+           cook=get_bool)
+CLIENT_RPMNG_INSTALLED_ACTION = \
+    Option("RPMng installed action",
+           default="install",
+           cf=('RPMng', 'installed_action'))
+CLIENT_RPMNG_ERASE_FLAGS = \
+    Option("RPMng erase flags",
+           default=["allmatches"],
+           cf=('RPMng', 'erase_flags'),
+           cook=list_split)
+CLIENT_RPMNG_VERSION_FAIL_ACTION = \
+    Option("RPMng version fail action",
+           default="upgrade",
+           cf=('RPMng', 'version_fail_action'))
+CLIENT_RPMNG_VERIFY_FAIL_ACTION = \
+    Option("RPMng verify fail action",
+           default="reinstall",
+           cf=('RPMng', 'verify_fail_action'))
+CLIENT_RPMNG_VERIFY_FLAGS = \
+    Option("RPMng verify flags",
+           default=[],
+           cf=('RPMng', 'verify_flags'),
+           cook=list_split)
+CLIENT_YUM24_INSTALLONLY = \
+    Option('RPMng install-only packages',
+           default=['kernel', 'kernel-bigmem', 'kernel-enterprise',
+                    'kernel-smp', 'kernel-modules', 'kernel-debug',
+                    'kernel-unsupported', 'kernel-devel', 'kernel-source',
+                    'kernel-default', 'kernel-largesmp-devel',
+                    'kernel-largesmp', 'kernel-xen', 'gpg-pubkey'],
+           cf=('RPMng', 'installonlypackages'),
+           cook=list_split)
+CLIENT_YUM24_PKG_CHECKS = \
+    Option("Perform YUM24 package checks",
+           default=True,
+           cf=('YUM24', 'pkg_checks'),
+           cook=get_bool)
+CLIENT_YUM24_PKG_VERIFY = \
+    Option("Perform YUM24 package verify",
+           default=True,
+           cf=('YUM24', 'pkg_verify'),
+           cook=get_bool)
+CLIENT_YUM24_INSTALLED_ACTION = \
+    Option("YUM24 installed action",
+           default="install",
+           cf=('YUM24', 'installed_action'))
+CLIENT_YUM24_ERASE_FLAGS = \
+    Option("YUM24 erase flags",
+           default=["allmatches"],
+           cf=('YUM24', 'erase_flags'),
+           cook=list_split)
+CLIENT_YUM24_VERSION_FAIL_ACTION = \
+    Option("YUM24 version fail action",
+           cf=('YUM24', 'version_fail_action'),
+           default="upgrade")
+CLIENT_YUM24_VERIFY_FAIL_ACTION = \
+    Option("YUM24 verify fail action",
+           default="reinstall",
+           cf=('YUM24', 'verify_fail_action'))
+CLIENT_YUM24_VERIFY_FLAGS = \
+    Option("YUM24 verify flags",
+           default=[],
+           cf=('YUM24', 'verify_flags'),
+           cook=list_split)
+CLIENT_YUM24_AUTODEP = \
+    Option("YUM24 autodependency processing",
+           default=True,
+           cf=('YUM24', 'autodep'),
+           cook=get_bool)
+CLIENT_YUMNG_PKG_CHECKS = \
+    Option("Perform YUMng package checks",
+           default=True,
+           cf=('YUMng', 'pkg_checks'),
+           cook=get_bool)
+CLIENT_YUMNG_PKG_VERIFY = \
+    Option("Perform YUMng package verify",
+           default=True,
+           cf=('YUMng', 'pkg_verify'),
+           cook=get_bool)
+CLIENT_YUMNG_INSTALLED_ACTION = \
+    Option("YUMng installed action",
+           default="install",
+           cf=('YUMng', 'installed_action'))
+CLIENT_YUMNG_VERSION_FAIL_ACTION = \
+    Option("YUMng version fail action",
+           default="upgrade",
+           cf=('YUMng', 'version_fail_action'))
+CLIENT_YUMNG_VERIFY_FAIL_ACTION = \
+    Option("YUMng verify fail action",
+           default="reinstall",
+           cf=('YUMng', 'verify_fail_action'))
+CLIENT_YUMNG_VERIFY_FLAGS = \
+    Option("YUMng verify flags",
+           default=[],
+           cf=('YUMng', 'verify_flags'),
+           cook=list_split)
 
 # Logging options
-LOGGING_FILE_PATH = Option('Set path of file log', default=None,
-                           cmd='-o', odesc='<path>', cf=('logging', 'path'))
+LOGGING_FILE_PATH = \
+    Option('Set path of file log',
+           default=None,
+           cmd='-o',
+           odesc='<path>',
+           cf=('logging', 'path'))
 
 # Plugin-specific options
-CFG_VALIDATION = Option('Run validation on Cfg files', default=True,
-                        cf=('cfg', 'validation'), cmd='--cfg-validation',
-                        long_arg=True, cook=get_bool)
+CFG_VALIDATION = \
+    Option('Run validation on Cfg files',
+           default=True,
+           cmd='--cfg-validation',
+           cf=('cfg', 'validation'),
+           long_arg=True,
+           cook=get_bool)
 
+# bcfg2-crypt options
+ENCRYPT = \
+    Option('Encrypt the specified file',
+           default=False,
+           cmd='--encrypt',
+           long_arg=True)
+DECRYPT = \
+    Option('Decrypt the specified file',
+           default=False,
+           cmd='--decrypt',
+           long_arg=True)
+CRYPT_PASSPHRASE = \
+    Option('Encryption passphrase (name or passphrase)',
+           default=None,
+           cmd='-p',
+           odesc='<passphrase>')
+CRYPT_XPATH = \
+    Option('XPath expression to select elements to encrypt',
+           default=None,
+           cmd='--xpath',
+           odesc='<xpath>',
+           long_arg=True)
+CRYPT_PROPERTIES = \
+    Option('Encrypt the specified file as a Properties file',
+           default=False,
+           cmd="--properties",
+           long_arg=True)
+CRYPT_CFG = \
+    Option('Encrypt the specified file as a Cfg file',
+           default=False,
+           cmd="--cfg",
+           long_arg=True)
+CRYPT_REMOVE = \
+    Option('Remove the plaintext file after encrypting',
+           default=False,
+           cmd="--remove",
+           long_arg=True)
 
 # Option groups
 CLI_COMMON_OPTIONS = dict(configfile=CFILE,
@@ -449,6 +800,43 @@ SERVER_COMMON_OPTIONS = dict(repo=SERVER_REPOSITORY,
                              cert=SERVER_CERT,
                              ca=SERVER_CA,
                              protocol=SERVER_PROTOCOL)
+
+CRYPT_OPTIONS = dict(encrypt=ENCRYPT,
+                     decrypt=DECRYPT,
+                     passphrase=CRYPT_PASSPHRASE,
+                     xpath=CRYPT_XPATH,
+                     properties=CRYPT_PROPERTIES,
+                     cfg=CRYPT_CFG,
+                     remove=CRYPT_REMOVE)
+
+DRIVER_OPTIONS = \
+    dict(apt_install_path=CLIENT_APT_TOOLS_INSTALL_PATH,
+         apt_var_path=CLIENT_APT_TOOLS_VAR_PATH,
+         apt_etc_path=CLIENT_SYSTEM_ETC_PATH,
+         portage_binpkgonly=CLIENT_PORTAGE_BINPKGONLY,
+         rpmng_installonly=CLIENT_RPMNG_INSTALLONLY,
+         rpmng_pkg_checks=CLIENT_RPMNG_PKG_CHECKS,
+         rpmng_pkg_verify=CLIENT_RPMNG_PKG_VERIFY,
+         rpmng_installed_action=CLIENT_RPMNG_INSTALLED_ACTION,
+         rpmng_erase_flags=CLIENT_RPMNG_ERASE_FLAGS,
+         rpmng_version_fail_action=CLIENT_RPMNG_VERSION_FAIL_ACTION,
+         rpmng_verify_fail_action=CLIENT_RPMNG_VERIFY_FAIL_ACTION,
+         rpmng_verify_flags=CLIENT_RPMNG_VERIFY_FLAGS,
+         yum24_installonly=CLIENT_YUM24_INSTALLONLY,
+         yum24_pkg_checks=CLIENT_YUM24_PKG_CHECKS,
+         yum24_pkg_verify=CLIENT_YUM24_PKG_VERIFY,
+         yum24_installed_action=CLIENT_YUM24_INSTALLED_ACTION,
+         yum24_erase_flags=CLIENT_YUM24_ERASE_FLAGS,
+         yum24_version_fail_action=CLIENT_YUM24_VERSION_FAIL_ACTION,
+         yum24_verify_fail_action=CLIENT_YUM24_VERIFY_FAIL_ACTION,
+         yum24_verify_flags=CLIENT_YUM24_VERIFY_FLAGS,
+         yum24_autodep=CLIENT_YUM24_AUTODEP,
+         yumng_pkg_checks=CLIENT_YUMNG_PKG_CHECKS,
+         yumng_pkg_verify=CLIENT_YUMNG_PKG_VERIFY,
+         yumng_installed_action=CLIENT_YUMNG_INSTALLED_ACTION,
+         yumng_version_fail_action=CLIENT_YUMNG_VERSION_FAIL_ACTION,
+         yumng_verify_fail_action=CLIENT_YUMNG_VERIFY_FAIL_ACTION,
+         yumng_verify_flags=CLIENT_YUMNG_VERIFY_FLAGS)
 
 class OptionParser(OptionSet):
     """

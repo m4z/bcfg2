@@ -23,11 +23,6 @@ KIND_CHOICES = (
     ('Path', 'symlink'),
     ('Service', 'Service'),
 )
-PING_CHOICES = (
-    #These are possible ping states
-    ('Up (Y)', 'Y'),
-    ('Down (N)', 'N')
-)
 TYPE_BAD = 1
 TYPE_MODIFIED = 2
 TYPE_EXTRA = 3
@@ -87,29 +82,8 @@ class Client(models.Model):
         pass
 
 
-class Ping(models.Model):
-    """Represents a ping of a client (sparsely)."""
-    client = models.ForeignKey(Client, related_name="pings")
-    starttime = models.DateTimeField()
-    endtime = models.DateTimeField()
-    status = models.CharField(max_length=4, choices=PING_CHOICES)  # up/down
-
-    class Meta:
-        get_latest_by = 'endtime'
-
-
 class InteractiveManager(models.Manager):
     """Manages interactions objects."""
-
-    def recent_interactions_dict(self, maxdate=None, active_only=True):
-        """
-        Return the most recent interactions for clients as of a date.
-
-        This method uses aggregated queries to return a ValuesQueryDict object.
-        Faster then raw sql since this is executed as a single query.
-        """
-
-        return list(self.values('client').annotate(max_timestamp=Max('timestamp')).values())
 
     def interaction_per_client(self, maxdate=None, active_only=True):
         """
@@ -161,8 +135,8 @@ class InteractiveManager(models.Manager):
 
 class Interaction(models.Model):
     """Models each reconfiguration operation interaction between client and server."""
-    client = models.ForeignKey(Client, related_name="interactions",)
-    timestamp = models.DateTimeField()  # Timestamp for this record
+    client = models.ForeignKey(Client, related_name="interactions")
+    timestamp = models.DateTimeField(db_index=True)  # Timestamp for this record
     state = models.CharField(max_length=32)  # good/bad/modified/etc
     repo_rev_code = models.CharField(max_length=64)  # repo revision at time of interaction
     goodcount = models.IntegerField()  # of good config-items
@@ -286,10 +260,28 @@ class Reason(models.Model):
     current_diff = models.TextField(max_length=1024*1024, blank=True)
     is_binary = models.BooleanField(default=False)
     is_sensitive = models.BooleanField(default=False)
-    unpruned = models.TextField(max_length=4096, blank=True)
+    unpruned = models.TextField(max_length=4096, blank=True, default='')
 
     def _str_(self):
         return "Reason"
+
+    def short_list(self):
+        rv = []
+        if self.current_owner or self.current_group or self.current_perms:
+            rv.append("File permissions")
+        if self.current_status:
+            rv.append("Incorrect status")
+        if self.current_to:
+            rv.append("Incorrect target")
+        if self.current_version or self.version == 'auto':
+            rv.append("Wrong version")
+        if not self.current_exists:
+            rv.append("Missing")
+        if self.current_diff or self.is_sensitive:
+            rv.append("Incorrect data")
+        if self.unpruned:
+            rv.append("Directory has extra files")
+        return rv
 
     @staticmethod
     @transaction.commit_on_success
@@ -350,3 +342,57 @@ class InternalDatabaseVersion(models.Model):
 
     def __str__(self):
         return "version %d updated the %s" % (self.version, self.updated.isoformat())
+
+    class Meta:
+        get_latest_by = "version"
+
+
+class Group(models.Model):
+    """
+    Groups extracted from interactions
+
+    name - The group name
+
+    TODO - Most of this is for future use
+    TODO - set a default group
+    """
+
+    name = models.CharField(max_length=255, unique=True)
+    profile = models.BooleanField(default=False)
+    public = models.BooleanField(default=False)
+    category = models.CharField(max_length=1024, blank=True)
+    comment = models.TextField(blank=True)
+
+    groups = models.ManyToManyField("self", symmetrical=False)
+    bundles = models.ManyToManyField("Bundle")
+
+    def __unicode__(self):
+        return self.name
+
+
+class Bundle(models.Model):
+    """
+    Bundles extracted from interactions
+
+    name - The bundle name
+    """
+
+    name = models.CharField(max_length=255, unique=True)
+
+    def __unicode__(self):
+        return self.name
+
+
+class InteractionMetadata(models.Model):
+    """
+    InteractionMetadata
+
+    Hold extra data associated with the client and interaction
+    """
+
+    interaction = models.OneToOneField(Interaction, primary_key=True, related_name='metadata')
+    profile = models.ForeignKey(Group, related_name="+")
+    groups = models.ManyToManyField(Group)
+    bundles = models.ManyToManyField(Bundle)
+
+
