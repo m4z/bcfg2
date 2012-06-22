@@ -9,9 +9,8 @@ import posixpath
 import re
 import sys
 import threading
+import Bcfg2.Server
 from Bcfg2.Bcfg2Py3k import ConfigParser
-
-from lxml.etree import XML, XMLSyntaxError
 
 import Bcfg2.Options
 
@@ -55,6 +54,19 @@ info_regex = re.compile( \
     'perms:(\s)*(?P<perms>\w+)|' +
     'sensitive:(\s)*(?P<sensitive>\S+)|')
 
+def bind_info(entry, metadata, infoxml=None, default=default_file_metadata):
+    for attr, val in list(default.items()):
+        entry.set(attr, val)
+    if infoxml:
+        mdata = dict()
+        infoxml.pnode.Match(metadata, mdata, entry=entry)
+        if 'Info' not in mdata:
+            msg = "Failed to set metadata for file %s" % entry.get('name')
+            logger.error(msg)
+            raise PluginExecutionError(msg)
+        for attr, val in list(mdata['Info'][None].items()):
+            entry.set(attr, val)
+
 
 class PluginInitError(Exception):
     """Error raised in cases of Plugin initialization errors."""
@@ -78,6 +90,10 @@ class Debuggable(object):
 
     def toggle_debug(self):
         self.debug_flag = not self.debug_flag
+        self.debug_log("%s: debug_flag = %s" % (self.__class__.__name__,
+                                                self.debug_flag),
+                       flag=True)
+        return self.debug_flag
 
     def debug_log(self, message, flag=None):
         if (flag is None and self.debug_flag) or flag:
@@ -208,7 +224,7 @@ class ThreadedStatistics(Statistics,
         self.terminate = core.terminate
         self.work_queue = Queue(100000)
         self.pending_file = "%s/etc/%s.pending" % (datastore, self.__class__.__name__)
-        self.daemon = True
+        self.daemon = False
         self.start()
 
     def save(self):
@@ -261,7 +277,9 @@ class ThreadedStatistics(Statistics,
                     if self.terminate.isSet():
                         return False
 
-                self.work_queue.put_nowait((metadata, lxml.etree.fromstring(pdata)))
+                self.work_queue.put_nowait((metadata,
+                                            lxml.etree.XML(pdata,
+                                                           parser=Bcfg2.Server.XMLParser)))
             except Full:
                 self.logger.warning("Queue.Full: Failed to load queue data")
                 break
@@ -280,7 +298,7 @@ class ThreadedStatistics(Statistics,
     def run(self):
         if not self.load():
             return
-        while not self.terminate.isSet():
+        while not self.terminate.isSet() and self.work_queue != None:
             try:
                 (xdata, client) = self.work_queue.get(block=True, timeout=2)
             except Empty:
@@ -290,7 +308,7 @@ class ThreadedStatistics(Statistics,
                 self.logger.error("ThreadedStatistics: %s" % e)
                 continue
             self.handle_statistic(xdata, client)
-        if not self.work_queue.empty():
+        if self.work_queue != None and not self.work_queue.empty():
             self.save()
 
     def process_statistics(self, metadata, data):
@@ -356,6 +374,17 @@ class Version(object):
     def commit_data(self, file_list, comment=None):
         pass
 
+
+class ClientRunHooks(object):
+    """ Provides hooks to interact with client runs """
+    def start_client_run(self, metadata):
+        pass
+
+    def end_client_run(self, metadata):
+        pass
+
+    def end_statistics(self, metadata):
+        pass
 
 # the rest of the file contains classes for coherent file caching
 
@@ -568,8 +597,9 @@ class XMLFileBacked(FileBacked):
     def Index(self):
         """Build local data structures."""
         try:
-            self.xdata = XML(self.data)
-        except XMLSyntaxError:
+            self.xdata = lxml.etree.XML(self.data,
+                                        parser=Bcfg2.Server.XMLParser)
+        except lxml.etree.XMLSyntaxError:
             logger.error("Failed to parse %s" % (self.name))
             return
         self.entries = self.xdata.getchildren()
@@ -620,7 +650,8 @@ class SingleXMLFileBacked(XMLFileBacked):
     def Index(self):
         """Build local data structures."""
         try:
-            self.xdata = lxml.etree.XML(self.data, base_url=self.name)
+            self.xdata = lxml.etree.XML(self.data, base_url=self.name,
+                                        parser=Bcfg2.Server.XMLParser)
         except lxml.etree.XMLSyntaxError:
             err = sys.exc_info()[1]
             logger.error("Failed to parse %s: %s" % (self.name, err))
@@ -646,41 +677,76 @@ class StructFile(XMLFileBacked):
     def __init__(self, name):
         XMLFileBacked.__init__(self, name)
 
-    def _match(self, item, metadata):
-        """ recursive helper for Match() """
-        if isinstance(item, lxml.etree._Comment):
-            return []
-        elif item.tag == 'Group':
-            rv = []
+    def _include_element(self, item, metadata):
+        """ determine if an XML element matches the metadata """
+        if item.tag == 'Group':
             if ((item.get('negate', 'false').lower() == 'true' and
                  item.get('name') not in metadata.groups) or
                 (item.get('negate', 'false').lower() == 'false' and
                  item.get('name') in metadata.groups)):
-                for child in item.iterchildren():
-                    rv.extend(self._match(child, metadata))
-            return rv
+                return True
+            else:
+                return False
         elif item.tag == 'Client':
-            rv = []
             if ((item.get('negate', 'false').lower() == 'true' and
                  item.get('name') != metadata.hostname) or
                 (item.get('negate', 'false').lower() == 'false' and
                  item.get('name') == metadata.hostname)):
+                return True
+            else:
+                return False
+        elif isinstance(item, lxml.etree._Comment):
+            return False
+        else:
+            return True
+
+    def _match(self, item, metadata):
+        """ recursive helper for Match() """
+        if self._include_element(item, metadata):
+            if item.tag == 'Group' or item.tag == 'Client':
+                rv = []
+                if self._include_element(item, metadata):
+                    for child in item.iterchildren():
+                        rv.extend(self._match(child, metadata))
+                return rv
+            else:
+                rv = copy.copy(item)
+                for child in rv.iterchildren():
+                    rv.remove(child)
                 for child in item.iterchildren():
                     rv.extend(self._match(child, metadata))
-            return rv
+                return [rv]
         else:
-            rv = copy.copy(item)
-            for child in rv.iterchildren():
-                rv.remove(child)
-            for child in item.iterchildren():
-                rv.extend(self._match(child, metadata))
-            return [rv]
+            return []
 
     def Match(self, metadata):
         """Return matching fragments of independent."""
         rv = []
         for child in self.entries:
             rv.extend(self._match(child, metadata))
+        return rv
+
+    def _xml_match(self, item, metadata):
+        """ recursive helper for XMLMatch """
+        if self._include_element(item, metadata):
+            if item.tag == 'Group' or item.tag == 'Client':
+                for child in item.iterchildren():
+                    item.remove(child)
+                    item.getparent().append(child)
+                    self._xml_match(child, metadata)
+                item.getparent().remove(item)
+            else:
+                for child in item.iterchildren():
+                    self._xml_match(child, metadata)
+        else:
+            item.getparent().remove(item)
+
+    def XMLMatch(self, metadata):
+        """ Return a rebuilt XML document that only contains the
+        matching portions """
+        rv = copy.deepcopy(self.xdata)
+        for child in rv.iterchildren():
+            self._xml_match(child, metadata)
         return rv
 
 
@@ -778,7 +844,7 @@ class XMLSrc(XMLFileBacked):
             return
         self.items = {}
         try:
-            xdata = lxml.etree.XML(data)
+            xdata = lxml.etree.XML(data, parser=Bcfg2.Server.XMLParser)
         except lxml.etree.XMLSyntaxError:
             logger.error("Failed to parse file %s" % (self.name))
             return
@@ -973,10 +1039,6 @@ class EntrySet(Debuggable):
         pattern += '(G(?P<prio>\d+)_(?P<group>\S+))))?$'
         self.specific = re.compile(pattern)
 
-    def debug_log(self, message, flag=None):
-        if (flag is None and self.debug_flag) or flag:
-            logger.error(message)
-
     def sort_by_specific(self, one, other):
         return cmp(one.specific, other.specific)
 
@@ -1107,18 +1169,7 @@ class EntrySet(Debuggable):
         return cmp(x.specific.prio, y.specific.prio)
 
     def bind_info_to_entry(self, entry, metadata):
-        # first set defaults from global metadata/:info
-        for key in self.metadata:
-            entry.set(key, self.metadata[key])
-        if self.infoxml:
-            mdata = {}
-            self.infoxml.pnode.Match(metadata, mdata, entry=entry)
-            if 'Info' not in mdata:
-                logger.error("Failed to set metadata for file %s" % \
-                             (entry.get('name')))
-                raise PluginExecutionError
-            [entry.attrib.__setitem__(key, value) \
-             for (key, value) in list(mdata['Info'][None].items())]
+        bind_info(entry, metadata, infoxml=self.infoxml, default=self.metadata)
 
     def bind_entry(self, entry, metadata):
         """Return the appropriate interpreted template from the set of available templates."""
@@ -1171,6 +1222,12 @@ class GroupSpool(Plugin, Generator):
             return self.handles[event.requestID] + event.filename
         else:
             return self.handles[event.requestID][:-1]
+
+    def toggle_debug(self):
+        for entry in self.entries.values():
+            if hasattr(entry, "toggle_debug"):
+                entry.toggle_debug()
+        return Plugin.toggle_debug()
 
     def HandleEvent(self, event):
         """Unified FAM event handler for GroupSpool."""

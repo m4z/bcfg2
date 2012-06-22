@@ -3,6 +3,7 @@ import difflib
 import logging
 import lxml.etree
 import platform
+import sys
 import time
 
 try:
@@ -11,10 +12,10 @@ except ImportError:
     pass
 
 import Bcfg2.Server.Plugin
-import Bcfg2.Server.Reports.importscript
+from Bcfg2.Server.Reports.importscript import load_stat
 from Bcfg2.Server.Reports.reports.models import Client
 import Bcfg2.Server.Reports.settings
-from Bcfg2.Server.Reports.updatefix import update_database
+from Bcfg2.Server.Reports.Updater import update_database, UpdaterError
 # for debugging output only
 logger = logging.getLogger('Bcfg2.Plugins.DBStats')
 
@@ -34,6 +35,8 @@ class DBStats(Bcfg2.Server.Plugin.Plugin,
                      "add to the statistics database")
         try:
             update_database()
+        except UpdaterError:
+            raise Bcfg2.Server.Plugin.PluginInitError
         except Exception:
             inst = sys.exc_info()[1]
             logger.debug(str(inst))
@@ -42,25 +45,17 @@ class DBStats(Bcfg2.Server.Plugin.Plugin,
     def handle_statistic(self, metadata, data):
         newstats = data.find("Statistics")
         newstats.set('time', time.asctime(time.localtime()))
-        # ick
-        data = lxml.etree.tostring(newstats)
-        ndx = lxml.etree.XML(data)
-        e = lxml.etree.Element('Node', name=metadata.hostname)
-        e.append(ndx)
-        container = lxml.etree.Element("ConfigStatistics")
-        container.append(e)
 
-        # FIXME need to build a metadata interface to expose a list of clients
         start = time.time()
         for i in [1, 2, 3]:
             try:
-                Bcfg2.Server.Reports.importscript.load_stats(self.core.metadata.clients_xml.xdata,
-                                                             container,
-                                                             self.core.encoding,
-                                                             0,
-                                                             logger,
-                                                             True,
-                                                             platform.node())
+                load_stat(metadata,
+                          newstats,
+                          self.core.encoding,
+                          0,
+                          logger,
+                          True,
+                          platform.node())
                 logger.info("Imported data for %s in %s seconds" \
                             % (metadata.hostname, time.time() - start))
                 return

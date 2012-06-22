@@ -147,7 +147,9 @@ Packages, please file a bug report so that we can fix the problem in
 future releases. In the meantime, you can work around this issue by
 blacklisting the offending Package in your Sources. The blacklist
 element should immediately follow the Component section of your source
-and should look like the following::
+and should look like the following:
+
+.. code-block:: xml
 
     <Blacklist>unwanted-packagename</Blacklist>
 
@@ -164,7 +166,9 @@ If you have yum libraries installed, Packages can automatically handle
 GPG signing keys for Yum and Pulp repositories. (You do not need to
 use the native yum resolver; if yum libraries are available, GPG
 signing keys can be handled automatically.) Simply specify the URL to
-the GPG key(s) for a repository in ``sources.xml``::
+the GPG key(s) for a repository in ``sources.xml``:
+
+.. code-block:: xml
 
     <Source type="yum"
             rawurl="http://mirror.example.com/centos6-x86_64/RPMS.os">
@@ -178,9 +182,43 @@ With the keys specified thusly, Packages will include the keys in the
 generated yum config file, and will ensure that the keys are imported
 on the client.
 
-There is no need to specify ``<GPGKey>`` tags for :ref:``Pulp sources
-<pulp-source-support>``; that data is pulled directly from the Pulp
+There is no need to specify ``<GPGKey>`` tags for :ref:`Pulp sources
+<pulp-source-support>`; that data is pulled directly from the Pulp
 REST API.
+
+Arbitrary Repo Options
+----------------------
+
+.. versionadded:: 1.2.3
+
+You can specify arbitrary options to be added to the repository config
+on the server side, if you are using the native yum libraries, and on
+the client side if you are using the ability of Packages to
+automatically generate your Yum config.  To do this, add an
+``<Options>`` tag to a Source; all of its attributes will be added
+verbatim to the repository in the generated config.  For instance:
+
+.. code-block:: xml
+
+    <Source type="yum" rawurl="http://mirror.example.com/centos-6-os">
+      <Arch>x86_64</Arch>
+      <Options proxy="http://proxy.example.com"/>
+    </Source>
+
+If you are using native yum libraries and need to set options only on
+the Bcfg2 server, you can set the ``serveronly`` attribute to "true";
+or, if you need to set options only on the client, you can set the
+``clientonly`` attribute to "true".  For instance, if your Bcfg2
+server needed to use a proxy to access a repo, and you wanted to
+expire metadata caches very quickly on the client, you could do:
+
+.. code-block:: xml
+
+    <Source type="yum" rawurl="http://mirror.example.com/centos-6-os">
+      <Arch>x86_64</Arch>
+      <Options serveronly="true" proxy="http://proxy.example.com"/>
+      <Options clientonly="true" metadata_expire="0"/>
+    </Source>
 
 .. _packages-exampleusage:
 
@@ -188,7 +226,9 @@ Example usage
 =============
 
 Create a ``sources.xml`` file in the Packages directory that looks
-something like this::
+something like this:
+
+.. code-block:: xml
 
     <Sources>
       <Group name="ubuntu-intrepid">
@@ -230,7 +270,9 @@ something like this::
 
         <Source type="apt" essential="false" ...>
 
-Yum sources can be similarly specified::
+Yum sources can be similarly specified:
+
+.. code-block:: xml
 
     <Sources>
       <Group name="centos-5.2">
@@ -250,8 +292,10 @@ Yum sources can be similarly specified::
 For sources with a **URL** attribute, the **Version** attribute is
 also necessary.
 
-:ref:``Pulp sources <pulp-source-support>`` are very simple to specify
-due to the amount of data that can be queried from Pulp itself::
+:ref:`Pulp sources <pulp-source-support>` are very simple to specify
+due to the amount of data that can be queried from Pulp itself:
+
+.. code-block:: xml
 
     <Sources>
       <Group name="centos-6-x86_64">
@@ -359,7 +403,9 @@ Package Checking and Verification
 =================================
 
 In order to do disable per-package verification Pkgmgr style, you will
-need to use :ref:`BoundEntries <boundentries>`, e.g.::
+need to use :ref:`BoundEntries <boundentries>`, e.g.:
+
+.. code-block:: xml
 
     <BoundPackage name="mem-agent" priority="1" version="auto"
                   type="yum" verify="false"/>
@@ -436,10 +482,10 @@ bcfg2-server process uses an external short-lived helper,
 library support.  By default, Bcfg2 looks for this helper in
 ``$PATH``, or, failing that, at ``/usr/sbin/bcfg2-yum-helper``.  If
 you have installed the helper elsewhere, you will need to configure
-that location with the ``helper`` option in the ``[yum]`` section,
-e.g.::
+that location with the ``helper`` option in the ``[packages:yum]``
+section, e.g.::
 
-    [yum]
+    [packages:yum]
     use_yum_libraries = 1
     helper = /usr/local/sbin/bcfg2-yum-helper
 
@@ -466,14 +512,18 @@ Package Groups
 Yum package groups are supported by the native Yum libraries. To
 include a package group, use the ``group`` attribute of the
 ``Package`` tag. You can use either the short group ID or the long
-group name::
+group name:
+
+.. code-block:: xml
 
     <Package group="SNMP Support"/>
     <Package group="system-management-snmp"/>
 
 By default, only those packages considered the "default" packages in a
 group will be installed. You can change this behavior using the
-"type" attribute::
+"type" attribute:
+
+.. code-block:: xml
 
     <Package group="development" type="optional"/>
     <Package group="Administration Tools" type="mandatory"/>
@@ -500,7 +550,9 @@ Pulp Support
 Bcfg2 contains explicit support for repositories managed by Pulp
 (http://pulpproject.org/). Due to the amount of data about a
 repository that can be retrieved directly from Pulp, the only thing
-necessary to configure a Pulp repo is the repo ID::
+necessary to configure a Pulp repo is the repo ID:
+
+.. code-block:: xml
 
     <Sources>
       <Group name="centos-6-x86_64">

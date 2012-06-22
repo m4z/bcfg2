@@ -17,20 +17,23 @@ urlpatterns = patterns('Bcfg2.Server.Reports.reports',
     url(r'^client/(?P<hostname>[^/]+)/(?P<pk>\d+)/?$', 'views.client_detail', name='reports_client_detail_pk'),
     url(r'^client/(?P<hostname>[^/]+)/?$', 'views.client_detail', name='reports_client_detail'),
     url(r'^elements/(?P<type>\w+)/(?P<pk>\d+)/?$', 'views.config_item', name='reports_item'),
+    url(r'^entry/(?P<eid>\w+)/?$', 'views.entry_status', name='reports_entry'),
 )
 
 urlpatterns += patterns('Bcfg2.Server.Reports.reports',
     *timeviewUrls(
-        (r'^grid/?$', 'views.client_index', None, 'reports_grid_view'),
         (r'^summary/?$', 'views.display_summary', None, 'reports_summary'),
         (r'^timing/?$', 'views.display_timing', None, 'reports_timing'),
-        (r'^elements/(?P<type>\w+)/?$', 'views.config_item_list', None, 'reports_item_list'),
+        (r'^common/(?P<threshold>\d+)/?$', 'views.common_problems', None, 'reports_common_problems'),
+        (r'^common/?$', 'views.common_problems', None, 'reports_common_problems'),
 ))
 
 urlpatterns += patterns('Bcfg2.Server.Reports.reports',
     *filteredUrls(*timeviewUrls(
+        (r'^grid/?$', 'views.client_index', None, 'reports_grid_view'),
         (r'^detailed/?$',
-            'views.client_detailed_list', None, 'reports_detailed_list')
+            'views.client_detailed_list', None, 'reports_detailed_list'),
+        (r'^elements/(?P<type>\w+)/?$', 'views.config_item_list', None, 'reports_item_list'),
 )))
 
 urlpatterns += patterns('Bcfg2.Server.Reports.reports',

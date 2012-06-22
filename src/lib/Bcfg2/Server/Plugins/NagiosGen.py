@@ -17,7 +17,21 @@ line_fmt = '\t%-32s %s'
 class NagiosGenConfig(Bcfg2.Server.Plugin.SingleXMLFileBacked,
                       Bcfg2.Server.Plugin.StructFile):
     def __init__(self, filename, fam):
-        Bcfg2.Server.Plugin.SingleXMLFileBacked.__init__(self, filename, fam)
+        # create config.xml if missing
+        if not os.path.exists(filename):
+            LOGGER.warning("NagiosGen: %s missing. "
+                           "Creating empty one for you." % filename)
+            f = open(filename, "w")
+            f.write("<NagiosGen></NagiosGen>")
+            f.close()
+
+        try:
+            Bcfg2.Server.Plugin.SingleXMLFileBacked.__init__(self,
+                                                             filename,
+                                                             fam)
+        except OSError:
+            LOGGER.error("NagiosGen: Failed to read configuration file: %s" % err)
+            raise Bcfg2.Server.Plugin.PluginInitError(msg)
         Bcfg2.Server.Plugin.StructFile.__init__(self, filename)
 
 
@@ -51,7 +65,12 @@ class NagiosGen(Bcfg2.Server.Plugin.Plugin,
 
     def createhostconfig(self, entry, metadata):
         """Build host specific configuration file."""
-        host_address = socket.gethostbyname(metadata.hostname)
+        try:
+            host_address = socket.gethostbyname(metadata.hostname)
+        except socket.gaierror:
+            LOGGER.error("Failed to find IP address for %s" %
+                         metadata.hostname)
+            raise Bcfg2.Server.Plugin.PluginExecutionError
         host_groups = [grp for grp in metadata.groups
                        if os.path.isfile('%s/%s-group.cfg' % (self.data, grp))]
         host_config = ['define host {',
