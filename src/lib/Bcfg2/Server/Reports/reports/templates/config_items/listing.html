@@ -9,6 +9,7 @@
 {% block pagebanner %}{{mod_or_bad|capfirst}} Element Listing{% endblock %}
 
 {% block content %}
+{% filter_navigator %}
 {% if item_list %}
   {% for type_name, type_data in item_list %}
     <div class='entry_list'>
@@ -20,9 +21,9 @@
           <tr style='text-align: left' ><th>Name</th><th>Count</th><th>Reason</th></tr>
         {% for entry, reason, eis in type_data %}
           <tr class='{% cycle listview,listview_alt %}'>
-            <td><a href="{% url reports_item type=mod_or_bad,pk=eis.0 %}">{{entry.name}}</a></td>
+            <td><a href="{% url reports_entry eid=entry.pk %}">{{entry.name}}</a></td>
             <td>{{ eis|length }}</td>
-            <td>{{ reason.short_list|join:"," }}</td>
+            <td><a href="{% url reports_item type=mod_or_bad,pk=eis.0 %}">{{ reason.short_list|join:"," }}</a></td>
           </tr>
         {% endfor %}
       </table>

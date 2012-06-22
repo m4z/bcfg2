@@ -23,11 +23,13 @@ KIND_CHOICES = (
     ('Path', 'symlink'),
     ('Service', 'Service'),
 )
+TYPE_GOOD = 0
 TYPE_BAD = 1
 TYPE_MODIFIED = 2
 TYPE_EXTRA = 3
 
 TYPE_CHOICES = (
+    (TYPE_GOOD, 'Good'),
     (TYPE_BAD, 'Bad'),
     (TYPE_MODIFIED, 'Modified'),
     (TYPE_EXTRA, 'Extra'),
@@ -281,6 +283,8 @@ class Reason(models.Model):
             rv.append("Incorrect data")
         if self.unpruned:
             rv.append("Directory has extra files")
+        if len(rv) == 0:
+            rv.append("Exists")
         return rv
 
     @staticmethod
@@ -307,6 +311,9 @@ class Entries(models.Model):
         cursor = connection.cursor()
         cursor.execute('delete from reports_entries where not exists (select rei.id from reports_entries_interactions rei where rei.entry_id = reports_entries.id)')
         transaction.set_dirty()
+
+    class Meta:
+        unique_together = ("name", "kind")
 
 
 class Entries_interactions(models.Model):

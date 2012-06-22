@@ -13,7 +13,8 @@ from django.http import \
 from django.shortcuts import render_to_response, get_object_or_404
 from django.core.urlresolvers import \
         resolve, reverse, Resolver404, NoReverseMatch
-from django.db import connection
+from django.db import connection, DatabaseError
+from django.db.models import Q
 
 from Bcfg2.Server.Reports.reports.models import *
 
@@ -24,6 +25,27 @@ __SORT_FIELDS__ = ( 'client', 'state', 'good', 'bad', 'modified', 'extra', \
 class PaginationError(Exception):
     """This error is raised when pagination cannot be completed."""
     pass
+
+
+def _in_bulk(model, ids):
+    """
+    Short cut to fetch in bulk and trap database errors.  sqlite will raise
+    a "too many SQL variables" exception if this list is too long.  Try using
+    django and fetch manually if an error occurs
+
+    returns a dict of this form { id: <model instance> }
+    """
+
+    try:
+        return model.objects.in_bulk(ids)
+    except DatabaseError:
+        pass
+
+    # if objects.in_bulk fails so will obejcts.filter(pk__in=ids)
+    bulk_dict = {}
+    [bulk_dict.__setitem__(i.id, i) \
+        for i in model.objects.all() if i.id in ids]
+    return bulk_dict
 
 
 def server_error(request):
@@ -148,22 +170,23 @@ def config_item(request, pk, type="bad"):
 
 
 @timeview
-def config_item_list(request, type, timestamp=None):
+def config_item_list(request, type, timestamp=None, **kwargs):
     """Render a listing of affected elements"""
     mod_or_bad = type.lower()
     type = convert_entry_type_to_id(type)
     if type < 0:
         raise Http404
 
-    current_clients = Interaction.objects.get_interaction_per_client_ids(timestamp)
+    current_clients = Interaction.objects.interaction_per_client(timestamp)
+    current_clients = [q['id'] for q in _handle_filters(current_clients, **kwargs).values('id')]
 
     ldata = list(Entries_interactions.objects.filter(
             interaction__in=current_clients, type=type).values())
     entry_ids = set([x['entry_id'] for x in ldata])
     reason_ids = set([x['reason_id'] for x in ldata])
 
-    entries = Entries.objects.in_bulk(entry_ids)
-    reasons = Reason.objects.in_bulk(reason_ids)
+    entries = _in_bulk(Entries, entry_ids)
+    reasons = _in_bulk(Reason, reason_ids)
 
     kind_list = {}
     [kind_list.__setitem__(kind, {}) for kind in set([e.kind for e in entries.values()])]
@@ -183,6 +206,32 @@ def config_item_list(request, type, timestamp=None):
     return render_to_response('config_items/listing.html',
                               {'item_list': lists,
                                'mod_or_bad': mod_or_bad,
+                               'timestamp': timestamp},
+        context_instance=RequestContext(request))
+
+
+@timeview
+def entry_status(request, eid, timestamp=None, **kwargs):
+    """Render a listing of affected elements"""
+    entry = get_object_or_404(Entries, pk=eid)
+
+    current_clients = Interaction.objects.interaction_per_client(timestamp)
+    inters = {}
+    [inters.__setitem__(i.id, i) \
+        for i in _handle_filters(current_clients, **kwargs).select_related('client')]
+
+    eis = Entries_interactions.objects.filter(
+            interaction__in=inters.keys(), entry=entry)
+
+    reasons = _in_bulk(Reason, set([x.reason_id for x in eis]))
+
+    item_data = []
+    for ei in eis:
+        item_data.append((ei, inters[ei.interaction_id], reasons[ei.reason_id]))
+
+    return render_to_response('config_items/entry_status.html',
+                              {'entry': entry,
+                               'item_data': item_data,
                                'timestamp': timestamp},
         context_instance=RequestContext(request))
 
@@ -208,9 +257,11 @@ def common_problems(request, timestamp=None, threshold=None):
         threshold = 10
 
     c_intr = Interaction.objects.get_interaction_per_client_ids(timestamp)
-    data_list = { 1: {}, 2: {}, 3: {}}
+    data_list = {}
+    [data_list.__setitem__(t_id, {}) \
+            for t_id, t_label in TYPE_CHOICES if t_id != TYPE_GOOD]
     ldata = list(Entries_interactions.objects.filter(
-            interaction__in=c_intr).values())
+            interaction__in=c_intr).exclude(type=TYPE_GOOD).values())
 
     entry_ids = set([x['entry_id'] for x in ldata])
     reason_ids = set([x['reason_id'] for x in ldata])
@@ -221,12 +272,14 @@ def common_problems(request, timestamp=None, threshold=None):
             data_list[type][data_key].append(x['id'])
         except KeyError:
             data_list[type][data_key] = [x['id']]
-    
-    entries = Entries.objects.in_bulk(entry_ids)
-    reasons = Reason.objects.in_bulk(reason_ids)
+
+    entries = _in_bulk(Entries, entry_ids)
+    reasons = _in_bulk(Reason, reason_ids)
 
     lists = []
     for type, type_name in TYPE_CHOICES:
+        if type == TYPE_GOOD:
+            continue
         lists.append([type_name.lower(), [(entries[e[0][0]], reasons[e[0][1]], e[1])
             for e in sorted(data_list[type].items(), key=lambda x: len(x[1]), reverse=True)
             if len(e[1]) > threshold]])
