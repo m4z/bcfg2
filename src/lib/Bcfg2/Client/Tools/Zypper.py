@@ -1,8 +1,9 @@
 """This provides Bcfg2 support for zypper packages."""
+# TODO: gpg-pubkey pkgs
 
 import Bcfg2.Client.Tools
 
-# TODO handle locks in a smart way
+# TODO what should be done if a pkg is locked, trust the server or this box? 
 class Zypper(Bcfg2.Client.Tools.PkgTool):
     """zypper package support."""
     name = 'Zypper'
@@ -12,6 +13,8 @@ class Zypper(Bcfg2.Client.Tools.PkgTool):
                    ('Package', 'rpm'),
                    ('Path', 'ignore')]
     # TODO do i need version?
+    # TODO Incomplete information for entry Package:gpg-pubkey; cannot install
+    #              ... due to absence of version attribute
     __req__ = {'Package': ['name', 'version'],
                'Path': ['type']}
     # TODO might be needed
@@ -41,10 +44,6 @@ class Zypper(Bcfg2.Client.Tools.PkgTool):
         self.available = {}
         self.RefreshPackagesLocally()
 
-    #def __zypperListUpdates(self):
-    #def __zypperSearch(self):
-    #    zypper se -t package -s
-
     def __getCurrentVersion(self, pkgname):
         """Return version string for currently installed package.
 
@@ -60,8 +59,6 @@ class Zypper(Bcfg2.Client.Tools.PkgTool):
         except KeyError:
             return None
 
-    # TODO: This takes about 8 minutes for all packages on a minimal
-    #       openSUSE 12.1 system. There *must* be a better way.
     def __getNewestVersion(self, pkgname):
         """Return version string of the newest available version of package.
 
@@ -77,6 +74,7 @@ class Zypper(Bcfg2.Client.Tools.PkgTool):
             currentversion = self.__getCurrentVersion(pkgname).rsplit('.', 1)[0]
             newestversion = currentversion
         except AttributeError:
+            currentversion = '0'
             newestversion = '0'
 
         for ver in versions:
@@ -106,16 +104,16 @@ class Zypper(Bcfg2.Client.Tools.PkgTool):
 
                 vcmp = self.__vcmp(currentversion, thisversion)
                 if vcmp == -1:
-                    self.logger.debug("Zypper: Newest: Update available for "
-                                      "%s: %s -> %s" %
-                                     (pkgname, currentversion, thisversion))
+                    #self.logger.debug("Zypper: Newest: Update available for "
+                    #                  "%s: %s -> %s" %
+                    #                 (pkgname, currentversion, thisversion))
                     # we might find multiple updates, so check if this one is
                     # newer than the newest one we know up to this point.
-                    if self.__vcmp(thisversion, newestversion) == -1:
-                        self.logger.debug("Zypper: Newest: Update: %s/%s/%s" %
-                                          (currentversion,
-                                          newestversion,
-                                          thisversion))
+                    if self.__vcmp(newestversion, thisversion) == -1:
+                        #self.logger.debug("Zypper: Newest: Update: %s/%s/%s" %
+                        #                  (currentversion,
+                        #                  newestversion,
+                        #                  thisversion))
                         newestversion = thisversion
                 elif vcmp == 1 or vcmp == 0:
                 #    self.logger.debug("Zypper: Nothing to do for %s" %
@@ -123,20 +121,20 @@ class Zypper(Bcfg2.Client.Tools.PkgTool):
                     pass
                 else:
                     self.logger.info("Zypper: got wrong data (vcmp).")
+        self.logger.debug("Zypper: Newest: Returning version %s-%s" %
+                          (pkgname, newestversion))
         # now it's time to add the suffix.
         return newestversion + '.' + arch
 
     def __vcmp(self, ver1, ver2):
         """Compare package versions."""
-        # negative: current is older
-        # positive: current is newer
+        # negative: ver1 is older than ver2
+        # positive: ver1 is newer
         # zero: both versions are equal
         vcmp = self.cmd.run("/usr/bin/zypper --terse versioncmp %s %s" %
                             (ver1, ver2))[1][0]
         #self.logger.debug("Zypper: vcmp: %s" % vcmp)
         return int(vcmp)
-
-    #def __stripZypperHeader(self,
 
     def RefreshPackages(self):
         """Create self.installed, the list of currently installed packages.
@@ -184,7 +182,7 @@ class Zypper(Bcfg2.Client.Tools.PkgTool):
         #self.logger.debug("Zypper: Begin local Refresh")
         # Force a refresh now, because depending on the zypper configuration,
         # the metadata might be old.
-        # TODO there *must* be a smarter way.
+        # TODO: This takes a moment, maybe do not force?
         refreshnow = self.cmd.run("/usr/bin/zypper --quiet --non-interactive "
                                   "refresh --force")
         updates_available = \
@@ -222,53 +220,61 @@ class Zypper(Bcfg2.Client.Tools.PkgTool):
            Returns True if the correct and unmodified version is installed,
                    False otherwise.
         """
-        # TODO refactor
         pn = entry.get('name')
+        pv = entry.get('version')
         cur = self.__getCurrentVersion(pn)
 
         # attribs are: name, priority, version, type, uri
         self.logger.debug("Zypper: Verify: %s (t:%s), Client has v:%s, "
                           "Server wants v:%s)" %
-                          (pn, entry.get('type'), cur, entry.get('version')))
+                          (pn, entry.get('type'), cur, pv))
 
         if not 'version' in entry.attrib:
-        #if not entry.get('version'):
             self.logger.info("Cannot verify unversioned package %s" % pn)
             return False
 
         if pn in self.installed:
             # package is already installed, check for correct version etc.
-            if (self.installed[pn] == \
-                entry.get('version') or entry.get('version') == 'any'):
+            if (self.installed[pn] == pv or pv == 'any'):
                 self.logger.debug("Zypper: Verify: %s is correct version %s" %
                                   (pn, self.installed[pn]))
                 return True
 
             # server wants newest version.
-            elif entry.get('version') == 'auto':
+            elif pv == 'auto':
                 # short-circuit check for updates.
                 if pn in self.available:
                     self.logger.debug("Zypper: Verify: update available"
                                       " for %s: %s -> %s" %
                                       (pn, cur, self.available[pn]))
                     return False
-                # no direct update found. this might be very redundant.
+                # no direct update found.
                 else:
-                    newest = self.__getNewestVersion(pn)
-                    if cur == newest:
-                        #self.logger.debug("Zypper: Verify: no update for %s" %
-                        #                  pn)
-                        return True
-                    # current is not newest. i am confused.
-                    else:
-                        return False
+                    # TODO: This might be the thorough way to do things,
+                    #       but takes a reeeally long time. (About 8 minutes
+                    #       for all packages on an absolutely minimal openSUSE
+                    #       12.1 system, versus 30 seconds with the
+                    #       short-circuit workaround to trust the local
+                    #       machines' "zypper list-updates".)
+                    #
+                    #newest = self.__getNewestVersion(pn)
+                    #if cur == newest:
+                    #    #self.logger.debug("Zypper: Verify: no update for %s" %
+                    #    #                  pn)
+                    #    return True
+                    ## currently installed version is not the newest.
+                    #else:
+                    #    return False
+
+                    # Workaround: zypper didn't find any updates above.
+                    return True
             else:
                 self.logger.info("  %s: Wrong version installed.  "
                                  "Want %s, but have %s" %
                                  (pn, entry.get("version"), self.installed[pn]))
                 return False
         else:
-            # package is not installed on the client.
+            # package is not (yet) installed on the client.
             self.logger.debug("Zypper: Verify: %s is missing" % pn)
             return False
 
@@ -279,14 +285,8 @@ class Zypper(Bcfg2.Client.Tools.PkgTool):
         """
         for pkg in packages:
             self.logger.info("Removing packages: %s" % " ".join(names))
-            self.cmd.run("/usr/bin/zypper --quiet --non-interactive remove %s" %
+            self.cmd.run("/usr/bin/zypper --non-interactive remove %s" %
                          pkg)
-    #    names = [pkg.get('name') for pkg in packages]
-    #    self.logger.info("Removing packages: %s" % " ".join(names))
-    #    self.cmd.run("/usr/bin/zypper remove --type package --clean-deps %s" %
-    #                 " ".join(names))
-    #    self.RefreshPackages()
-    #    self.extra = self.FindExtraPackages()
 
     def Install(self, packages, states):
         """Install packages.
@@ -294,26 +294,28 @@ class Zypper(Bcfg2.Client.Tools.PkgTool):
            This will be called *after* confirmation in interactive mode.
 
            Format:
-               packages: TODO
+               packages: TODO list of all packages from the server?
 
                states contains the verify states of the packages:
                    states = { {'name':'foo', 'version':'...', ...}:True,
                               {'name':'bar', ...}:False,
                               ...}
-
-           Gotta lotta 'splainin' TODO.
+               (True indicates the entry is fine, False means it needs action.)
         """
-        #install_pkgs = []
-        for pkg in states.keys():
-            if states[pkg] is False:
-                self.logger.info("Zypper: Change: %s" % pkg)
+        for pkgstate in states.keys():
+            if states[pkgstate] is False:
+                self.logger.info("Zypper: Change: Want to change %s" %
+                                 pkgstate.get('name'))
+            #else:
+            #    self.logger.info("Zypper: Change: No change for %s" %
+            #                     pkgstate.get('name'))
 
         for pkg in packages:
             newver = self.__getNewestVersion(pkg.get('name'))
-            instname = pkg + '-' + newver
+            instname = pkg.get('name') + '-' + newver
             self.logger.info("Zypper: Install package: %s" % instname)
-            self.cmd.run("/usr/bin/zypper --quiet --non-interactive "
-                         "--no-recommends install %s" % instname)
+            self.cmd.run("/usr/bin/zypper --non-interactive "
+                         "install --no-recommends %s" % instname)
 
     def FindExtraPackages(self):
         """Find extra packages."""
