@@ -127,10 +127,13 @@ class Zypper(Bcfg2.Client.Tools.PkgTool):
         return newestversion + '.' + arch
 
     def __vcmp(self, ver1, ver2):
-        """Compare package versions."""
-        # negative: ver1 is older than ver2
-        # positive: ver1 is newer
-        # zero: both versions are equal
+        """Compare package versions.
+
+           Returns an integer that is...
+               negative, if ver1 is older than ver2;
+               positive, if ver1 is newer;
+               zero,     if both versions are equal.
+        """
         vcmp = self.cmd.run("/usr/bin/zypper --terse versioncmp %s %s" %
                             (ver1, ver2))[1][0]
         #self.logger.debug("Zypper: vcmp: %s" % vcmp)
@@ -281,12 +284,22 @@ class Zypper(Bcfg2.Client.Tools.PkgTool):
     def RemovePackages(self, packages):
         """Remove extra packages.
 
-           packages is TODO
+           packages is the list of items that were selected to be removed.
+               Package = {'type':'rpm', 'name':'foo'}
+
+           This will remove additional packages if they depend on a package you
+           selected for removal.
         """
+        rmpkgs = []
         for pkg in packages:
-            self.logger.info("Removing packages: %s" % " ".join(names))
-            self.cmd.run("/usr/bin/zypper --non-interactive remove %s" %
-                         pkg)
+            pn = pkg.get('name')
+            pv =  self.__getCurrentVersion(pn)
+            pname = pn + "-" + pv
+            rmpkgs.append(pname)
+
+        rmpkgs_str = " ".join(rmpkgs)
+        self.logger.info("Removing packages: %s" % rmpkgs_str)
+        self.cmd.run("/usr/bin/zypper --non-interactive remove %s" % rmpkgs_str)
 
     def Install(self, packages, states):
         """Install packages.
