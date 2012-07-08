@@ -1,21 +1,42 @@
 """This provides Bcfg2 support for zypper packages."""
 # TODO: gpg-pubkey pkgs
+# TODO: After Install or Remove, the entries are still listed as Incorrect.
+#       Is this what self.modified is used for?
 
 import Bcfg2.Client.Tools
 
 # TODO what should be done if a pkg is locked, trust the server or this box? 
 class Zypper(Bcfg2.Client.Tools.PkgTool):
-    """zypper package support."""
+    """zypper package support.
+
+       A few words of caution:
+           In the case of installation and removal, even if the user selects not
+           to change state for pkg A (install or remove), but then decides
+           differently for another pkg B that pkg A depends on (removal) or is
+           depended upon (install), the state of pkg A will still change.
+           This might be unexpected or even undesired, but this is the behavior
+           that is shown by zypper itself.
+           We could implement elaborate checks here to stop changing pkg B in
+           these cases too, because the user is obviously asking us to do
+           something impossible, but since this would complicate this plugin
+           further, it hasn't been done yet.
+    """
     name = 'Zypper'
     __execs__ = ["/bin/rpm", "/usr/bin/zypper"]
     __handles__ = [('Package', 'zypper'),
                    ('Package', 'yum'),
                    ('Package', 'rpm'),
                    ('Path', 'ignore')]
-    # TODO do i need version?
-    # TODO Incomplete information for entry Package:gpg-pubkey; cannot install
+    # Unsure if i need version, like this:
+    #__req__ = {'Package': ['name', 'version'],
+    # This results in:
+    #   Incomplete information for entry Package:gpg-pubkey; cannot install
     #              ... due to absence of version attribute
-    __req__ = {'Package': ['name', 'version'],
+    #
+    # gpg-pubkey (t:rpm), Client has v:56b4177a-4be18cab.noarch, Server wants
+    # v:None)
+    # Cannot verify unversioned package gpg-pubkey
+    __req__ = {'Package': ['name'],
                'Path': ['type']}
     # TODO might be needed
     # __req_gpg__ = {'Package': ['name'], 'Instance': ['version', 'release']}
@@ -179,6 +200,8 @@ class Zypper(Bcfg2.Client.Tools.PkgTool):
     def RefreshPackagesLocally(self):
         """Get list of newest available packages.
 
+           These are the updates and new packages that zypper *could* install.
+
            Format:
                self.available['name'] = '<version>-<release>.<arch>'
         """
@@ -219,6 +242,8 @@ class Zypper(Bcfg2.Client.Tools.PkgTool):
     def VerifyPackage(self, entry, modlist):
         """Verify Package status for entry, by comparing the versions the server
            wants us to have (entry) to the version we have (self.installed).
+
+           TODO what is modlist?
 
            Returns True if the correct and unmodified version is installed,
                    False otherwise.
@@ -281,33 +306,55 @@ class Zypper(Bcfg2.Client.Tools.PkgTool):
             self.logger.debug("Zypper: Verify: %s is missing" % pn)
             return False
 
+    # TODO: gpg-pubkey
     def RemovePackages(self, packages):
         """Remove extra packages.
 
-           packages is the list of items that were selected to be removed.
-               Package = {'type':'rpm', 'name':'foo'}
-
            This will remove additional packages if they depend on a package you
            selected for removal.
+
+           packages is the list of items that were selected to be removed.
+               Package = {'type':'rpm', 'name':'foo'}
         """
         rmpkgs = []
+        # TODO can this fail if no packages were selected?
         for pkg in packages:
             pn = pkg.get('name')
             pv =  self.__getCurrentVersion(pn)
             pname = pn + "-" + pv
+            if pn == 'gpg-pubkey':
+                # TODO: this is never reached?
+                self.logger.info("Zypper: Skipping removal of %s" % pname)
             rmpkgs.append(pname)
 
-        rmpkgs_str = " ".join(rmpkgs)
-        self.logger.info("Removing packages: %s" % rmpkgs_str)
-        self.cmd.run("/usr/bin/zypper --non-interactive remove %s" % rmpkgs_str)
+        if rmpkgs != []:
+            rmpkgs_str = " ".join(rmpkgs)
+            self.logger.info("Zypper: Removing packages: %s" % rmpkgs_str)
+            self.cmd.run("/usr/bin/zypper --non-interactive remove %s" %
+                         rmpkgs_str)
+            # in order to display the correct verify state in state=final, we
+            # have to refresh the package list and then recalculate the verify
+            # state.
+            self.RefreshPackages()
+            self.FindExtraPackages()
+            # TODO: still need to re-verify now?
+            #for pkg in rmpkgs:
+            # can't set state for uninstalled pkg
+            #    pn = pkg.rsplit('.', 1)[0]
+            #    states[pkg] = self.VerifyPackage(pkg, [])
+
 
     def Install(self, packages, states):
         """Install packages.
 
            This will be called *after* confirmation in interactive mode.
+           TODO: It relies on zypper, so even if the user selects not to change
+           package A, but then selects to install package B which needs A, both
+           will be changed. This might be unexpected or even undesired.
 
            Format:
                packages: TODO list of all packages from the server?
+                         TODO list of all non-verifying packages?
 
                states contains the verify states of the packages:
                    states = { {'name':'foo', 'version':'...', ...}:True,
@@ -317,21 +364,32 @@ class Zypper(Bcfg2.Client.Tools.PkgTool):
         """
         for pkgstate in states.keys():
             if states[pkgstate] is False:
-                self.logger.info("Zypper: Change: Want to change %s" %
+                self.logger.info("Zypper: Change: Server wants to change %s" %
                                  pkgstate.get('name'))
             #else:
             #    self.logger.info("Zypper: Change: No change for %s" %
             #                     pkgstate.get('name'))
 
+        # TODO: gpg
         for pkg in packages:
             newver = self.__getNewestVersion(pkg.get('name'))
             instname = pkg.get('name') + '-' + newver
             self.logger.info("Zypper: Install package: %s" % instname)
             self.cmd.run("/usr/bin/zypper --non-interactive "
                          "install --no-recommends %s" % instname)
+            # TODO: we might need to collect all changed packages here so we can
+            # change their verify states.
 
+        # in order to display the correct verify state in state=final, we have
+        # to refresh the package list and then recalculate the verify state.
+        self.RefreshPackages()
+        for pkg in packages:
+            states[pkg] = self.VerifyPackage(pkg, [])
+
+    # This is shamelessly ripped from the YUMng plugin.
     def FindExtraPackages(self):
         """Find extra packages."""
+        self.logger.debug("Zypper: Begin FindExtraPackages")
         packages = [e.get('name') for e in self.getSupportedEntries()]
         extras = []
 
@@ -339,6 +397,7 @@ class Zypper(Bcfg2.Client.Tools.PkgTool):
             if pkg not in packages:
                 entry = Bcfg2.Client.XML.Element('Package', name=pkg,
                                                  type=self.pkgtype)
+                self.logger.debug("Zypper: FindExtraPkg: %s" % pkg)
                 for i in self.installed[pkg]:
                     inst = Bcfg2.Client.XML.SubElement(entry,
                                                        'Instance',
@@ -347,6 +406,7 @@ class Zypper(Bcfg2.Client.Tools.PkgTool):
                                                        arch=i['arch'])
                 extras.append(entry)
         return extras
+        self.logger.debug("Zypper: End FindExtraPackages")
 
     def VerifyPath(self, entry, _):
         """Do nothing here since we only verify Path type=ignore"""
