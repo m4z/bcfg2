@@ -332,6 +332,7 @@ class Zypper(Bcfg2.Client.Tools.PkgTool):
             self.logger.info("Zypper: Removing packages: %s" % rmpkgs_str)
             self.cmd.run("/usr/bin/zypper --non-interactive remove %s" %
                          rmpkgs_str)
+            # TODO doesn't work yet.
             # in order to display the correct verify state in state=final, we
             # have to refresh the package list and then recalculate the verify
             # state.
