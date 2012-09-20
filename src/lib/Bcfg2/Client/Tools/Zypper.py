@@ -5,7 +5,7 @@
 
 import Bcfg2.Client.Tools
 
-# TODO what should be done if a pkg is locked, trust the server or this box? 
+# TODO what should be done if a pkg is locked, trust the server or this box?
 class Zypper(Bcfg2.Client.Tools.PkgTool):
     """zypper package support.
 
@@ -333,6 +333,21 @@ class Zypper(Bcfg2.Client.Tools.PkgTool):
             self.cmd.run("/usr/bin/zypper --non-interactive remove %s" %
                          rmpkgs_str)
             # TODO doesn't work yet.
+            # Zypper: Begin FindExtraPackages
+            # Zypper: FindExtraPkg: emacs-info
+            # Zypper: FindExtraPkg: gpm
+            #
+            # Phase: final
+            # Correct entries:        373
+            # Incorrect entries:      4
+            #  Package:cdrkit-cdrtools-compat  Package:gpg-pubkey  Package:icedax  Package:vorbis-tools
+            # Total managed entries:  377
+            # Unmanaged entries:      17
+            #  Package:ctags       Package:emacs-nox  Service:cron         Service:haveged  Service:network-remotefs  Service:sshd
+            #  Package:emacs       Package:gpm        Service:dbus         Service:kbd      Service:purge-kernels     Service:syslog
+            #  Package:emacs-info  Service:apache2    Service:earlysyslog  Service:network  Service:random
+            #
+            # say:~ #
             # in order to display the correct verify state in state=final, we
             # have to refresh the package list and then recalculate the verify
             # state.
