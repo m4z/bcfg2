@@ -144,7 +144,8 @@ class Zypper(Bcfg2.Client.Tools.PkgTool):
                     self.logger.info("Zypper: got wrong data (vcmp).")
         self.logger.debug("Zypper: Newest: Returning version %s-%s" %
                           (pkgname, newestversion))
-        # now it's time to add the suffix.
+        # Now it's time to add the suffix.
+        # Please note that this will return None in case of gpg-pubkey pkgs.
         return newestversion + '.' + arch
 
     def __vcmp(self, ver1, ver2):
@@ -159,6 +160,25 @@ class Zypper(Bcfg2.Client.Tools.PkgTool):
                             (ver1, ver2))[1][0]
         #self.logger.debug("Zypper: vcmp: %s" % vcmp)
         return int(vcmp)
+
+    def _handleGPGPubkeyInstances(self, pkg):
+        """Make handling of gpg-pubkey packages possible.
+
+           GPG public keys are a special case in RPM land.
+
+           Returns a list of the package instances, or None if none.
+        """
+        #self.logger.debug("Zypper: begin _GPG")
+        keys = []
+        for child in pkg.getchildren():
+            #self.logger.debug("Zypper: non-yum pkg: child %s" % dir(child))
+            #self.logger.debug("Zypper: non-yum pkg: child %s" % child.keys())
+            #self.logger.debug("Zypper: non-yum pkg: child %s" % child.values())
+            # TODO make this smarter, work with only ver-rel
+            keys.append("gpg-pubkey-%s-%s.noarch" % (child.get('version'),
+                                                     child.get('release')))
+        #self.logger.debug("Zypper: end _GPG: %s" % keys)
+        return keys
 
     def RefreshPackages(self):
         """Create self.installed, the list of currently installed packages.
@@ -240,8 +260,9 @@ class Zypper(Bcfg2.Client.Tools.PkgTool):
         #self.logger.debug("Zypper: End local Refresh")
 
     def VerifyPackage(self, entry, modlist):
-        """Verify Package status for entry, by comparing the versions the server
-           wants us to have (entry) to the version we have (self.installed).
+        """Verify Package status for entry, by comparing the version(s)
+           the server wants us to have (entry) to the version we have
+           (self.installed).
 
            TODO what is modlist?
 
@@ -249,21 +270,59 @@ class Zypper(Bcfg2.Client.Tools.PkgTool):
                    False otherwise.
         """
         pn = entry.get('name')
+        pt = entry.get('type')
         pv = entry.get('version')
         cur = self.__getCurrentVersion(pn)
 
-        # attribs are: name, priority, version, type, uri
-        self.logger.debug("Zypper: Verify: %s (t:%s), Client has v:%s, "
-                          "Server wants v:%s)" %
-                          (pn, entry.get('type'), cur, pv))
+        if pt != 'yum' and pn == 'gpg-pubkey':
+            #self.logger.debug("Zypper: Verify: GPG")
+            pubkeys = self._handleGPGPubkeyInstances(entry)
+            # let's not duplicate the effort here just for printing early.
+            # TODO the client has a list too.
+            self.logger.debug("Zypper: Verify: %s (t:%s), Client has v:%s, "
+                              "Server wants: see below." % (pn, pt, cur))
+        else:
+            # attribs are: name, priority, version, type, uri
+            self.logger.debug("Zypper: Verify: %s (t:%s), Client has v:%s, "
+                              "Server wants v:%s)" % (pn, pt, cur, pv))
 
-        if not 'version' in entry.attrib:
+        # in case of gpg-pubkey packages, it's ok if there is no version yet.
+        if not 'version' in entry.attrib and pubkeys is None:
             self.logger.info("Cannot verify unversioned package %s" % pn)
             return False
 
         if pn in self.installed:
+            # Handle gpg-pubkey packages first
+            if pn == 'gpg-pubkey':
+                # TODO make this smarter, work with only ver-rel
+                # if the current key is in the list of wanted keys, accept.
+                # self.installed does not work in this case.
+                #self.logger.debug("Zypper: Verify: gpg-pubkey: %s" %
+                #                  self.installed[pn])
+                for wantedkey in self.installed[pn]:
+                    self.logger.debug("Zypper: Verify: gpg-pubkey: %s" %
+                                     wantedkey)
+                    for k in pubkeys:
+                        # format: gpg-pubkey-<version>-<release>.noarch
+                        version = k.rsplit('-', 2)[1]
+                        release = k.rsplit('-', 2)[2].rsplit('.', 1)[0]
+                        arch = k.rsplit('.', 1)[1]
+                        if cur == "%s-%s.%s" % (version, release, arch):
+                            self.logger.debug("Zypper: Verify: gpg-pubkey is "
+                                              " correct version %s-%s.%s " %
+                                              (version, release, arch))
+                            # TODO this is wrong. think about a better way to
+                            # validate each key, for example a list of client
+                            # pubkeys with a 'valid' key for each and a final
+                            # return.
+                            return True
+                # if we arrive here, no key matched.
+                self.logger.debug("Zypper: Verify: gpg-pubkey is missing: "
+                                  "%s-%s.%s" % (version, release, arch))
+                return False
+
             # package is already installed, check for correct version etc.
-            if (self.installed[pn] == pv or pv == 'any'):
+            elif (self.installed[pn] == pv or pv == 'any'):
                 self.logger.debug("Zypper: Verify: %s is correct version %s" %
                                   (pn, self.installed[pn]))
                 return True
@@ -389,6 +448,10 @@ class Zypper(Bcfg2.Client.Tools.PkgTool):
         # TODO: gpg
         for pkg in packages:
             newver = self.__getNewestVersion(pkg.get('name'))
+            # TODO newver can still be None in case of gpg-pubkey pkgs.
+            # Zypper: Verify: gpg-pubkey (t:rpm), Client has
+            # v:56b4177a-4be18cab.noarch, Server wants v:None)
+            # Cannot verify unversioned package gpg-pubkey
             instname = pkg.get('name') + '-' + newver
             self.logger.info("Zypper: Install package: %s" % instname)
             self.cmd.run("/usr/bin/zypper --non-interactive "
