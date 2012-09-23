@@ -65,20 +65,51 @@ class Zypper(Bcfg2.Client.Tools.PkgTool):
         self.available = {}
         self.RefreshPackagesLocally()
 
-    def __getCurrentVersion(self, pkgname):
+    #def __getCurrentVersion(self, pkgname):
+    def __getCurrentVersion(self, pkg):
         """Return version string for currently installed package.
 
            The version of package <pkgname> is returned in the format
            <version>-<release>.<arch> (without the package name itself),
            or None if not installed.
         """
+        # gpg-pubkey package with multiple instances (type entry).
         try:
-            old = self.installed[pkgname][0]
-            return (old.get('version') +
-                    '-' + old.get('release') +
-                    '.' + old.get('arch'))
-        except KeyError:
-            return None
+            #self.logger.debug("Zypper: _cur: %s" % pkg.getchildren())
+            #self.logger.debug("Zypper: _cur: %s" %
+            #                  dir(self.installed[pkg.get('name')]))
+            try:
+                #self.logger.debug("Zypper: _cur: %s" %
+                #                  self.installed[pkg.get('name')])
+                keys = []
+                for child in self.installed[pkg.get('name')]:
+                    self.logger.debug("Zypper: _cur: %s" % child)
+                    keys.append("%s-%s.noarch" %
+                                (child.get('version'), child.get('release')))
+                #old = self.installed[pkg.get('name')][0]
+                #return (old.get('version') +
+                #        '-' + old.get('release') +
+                #        '.' + old.get('arch'))
+                return keys
+            except KeyError:
+                return None
+        # "normal" package, type string.
+        except AttributeError:
+            try:
+                #self.logger.debug("Zypper: _cur: %s" %
+                #                  self.installed[pkg])
+                #old = self.installed[pkg][0]
+                c_pkgs = []
+                for child in self.installed[pkg]:
+                    c_pkgs.append("%s-%s.%s" % (child.get('version'),
+                                                   child.get('release'),
+                                                   child.get('arch')))
+                #return (old.get('version') +
+                #        '-' + old.get('release') +
+                #        '.' + old.get('arch'))
+                return c_pkgs
+            except KeyError:
+                return None
 
     def __getNewestVersion(self, pkgname):
         """Return version string of the newest available version of package.
@@ -255,6 +286,7 @@ class Zypper(Bcfg2.Client.Tools.PkgTool):
 
                 self.logger.debug("Zypper: Update available for %s: %s -> %s" %
                                  (pkgname,
+                                  # TODO refactor with entry if possible
                                   self.__getCurrentVersion(pkgname),
                                   self.available[pkgname]))
         #self.logger.debug("Zypper: End local Refresh")
@@ -269,45 +301,50 @@ class Zypper(Bcfg2.Client.Tools.PkgTool):
            Returns True if the correct and unmodified version is installed,
                    False otherwise.
         """
-        pn = entry.get('name')
-        pt = entry.get('type')
-        pv = entry.get('version')
-        cur = self.__getCurrentVersion(pn)
+        s_pn = entry.get('name')
+        s_pt = entry.get('type')
+        s_pv = entry.get('version')
+        # TODO refactor
+        if s_pn == 'gpg-pubkey':
+            c_cur = self.__getCurrentVersion(entry)
+        else:
+            c_cur = self.__getCurrentVersion(s_pn)
 
-        if pt != 'yum' and pn == 'gpg-pubkey':
+        if s_pt != 'yum' and s_pn == 'gpg-pubkey':
             #self.logger.debug("Zypper: Verify: GPG")
-            pubkeys = self._handleGPGPubkeyInstances(entry)
+            s_pubkeys = self._handleGPGPubkeyInstances(entry)
             # let's not duplicate the effort here just for printing early.
             # TODO the client has a list too.
             self.logger.debug("Zypper: Verify: %s (t:%s), Client has v:%s, "
-                              "Server wants: see below." % (pn, pt, cur))
+                              "Server wants: see below." % (s_pn, s_pt, c_cur))
+            self.logger.debug("Zypper: Verify: %s" % entry.keys())
         else:
             # attribs are: name, priority, version, type, uri
             self.logger.debug("Zypper: Verify: %s (t:%s), Client has v:%s, "
-                              "Server wants v:%s)" % (pn, pt, cur, pv))
+                              "Server wants v:%s)" % (s_pn, s_pt, c_cur, s_pv))
 
         # in case of gpg-pubkey packages, it's ok if there is no version yet.
-        if not 'version' in entry.attrib and pubkeys is None:
-            self.logger.info("Cannot verify unversioned package %s" % pn)
+        if not 'version' in entry.attrib and s_pubkeys is None:
+            self.logger.info("Cannot verify unversioned package %s" % s_pn)
             return False
 
-        if pn in self.installed:
+        if s_pn in self.installed:
             # Handle gpg-pubkey packages first
-            if pn == 'gpg-pubkey':
+            if s_pn == 'gpg-pubkey':
                 # TODO make this smarter, work with only ver-rel
                 # if the current key is in the list of wanted keys, accept.
                 # self.installed does not work in this case.
                 #self.logger.debug("Zypper: Verify: gpg-pubkey: %s" %
-                #                  self.installed[pn])
-                for wantedkey in self.installed[pn]:
+                #                  self.installed[s_pn])
+                for c_haskey in self.installed[s_pn]:
                     self.logger.debug("Zypper: Verify: gpg-pubkey: %s" %
-                                     wantedkey)
-                    for k in pubkeys:
+                                     c_haskey)
+                    for k in s_pubkeys:
                         # format: gpg-pubkey-<version>-<release>.noarch
                         version = k.rsplit('-', 2)[1]
                         release = k.rsplit('-', 2)[2].rsplit('.', 1)[0]
                         arch = k.rsplit('.', 1)[1]
-                        if cur == "%s-%s.%s" % (version, release, arch):
+                        if c_cur == "%s-%s.%s" % (version, release, arch):
                             self.logger.debug("Zypper: Verify: gpg-pubkey is "
                                               " correct version %s-%s.%s " %
                                               (version, release, arch))
@@ -322,18 +359,18 @@ class Zypper(Bcfg2.Client.Tools.PkgTool):
                 return False
 
             # package is already installed, check for correct version etc.
-            elif (self.installed[pn] == pv or pv == 'any'):
+            elif (self.installed[s_pn] == s_pv or s_pv == 'any'):
                 self.logger.debug("Zypper: Verify: %s is correct version %s" %
-                                  (pn, self.installed[pn]))
+                                  (s_pn, self.installed[s_pn]))
                 return True
 
             # server wants newest version.
-            elif pv == 'auto':
+            elif s_pv == 'auto':
                 # short-circuit check for updates.
-                if pn in self.available:
+                if s_pn in self.available:
                     self.logger.debug("Zypper: Verify: update available"
                                       " for %s: %s -> %s" %
-                                      (pn, cur, self.available[pn]))
+                                      (s_pn, c_cur, self.available[s_pn]))
                     return False
                 # no direct update found.
                 else:
@@ -344,10 +381,10 @@ class Zypper(Bcfg2.Client.Tools.PkgTool):
                     #       short-circuit workaround to trust the local
                     #       machines' "zypper list-updates".)
                     #
-                    #newest = self.__getNewestVersion(pn)
-                    #if cur == newest:
+                    #newest = self.__getNewestVersion(s_pn)
+                    #if c_cur == newest:
                     #    #self.logger.debug("Zypper: Verify: no update for %s" %
-                    #    #                  pn)
+                    #    #                  s_pn)
                     #    return True
                     ## currently installed version is not the newest.
                     #else:
@@ -358,11 +395,11 @@ class Zypper(Bcfg2.Client.Tools.PkgTool):
             else:
                 self.logger.info("  %s: Wrong version installed.  "
                                  "Want %s, but have %s" %
-                                 (pn, entry.get("version"), self.installed[pn]))
+                                 (s_pn, entry.get("version"), self.installed[s_pn]))
                 return False
         else:
             # package is not (yet) installed on the client.
-            self.logger.debug("Zypper: Verify: %s is missing" % pn)
+            self.logger.debug("Zypper: Verify: %s is missing" % s_pn)
             return False
 
     # TODO: gpg-pubkey
@@ -488,5 +525,5 @@ class Zypper(Bcfg2.Client.Tools.PkgTool):
         self.logger.debug("Zypper: End FindExtraPackages")
 
     def VerifyPath(self, entry, _):
-        """Do nothing here since we only verify Path type=ignore"""
+        """Do nothing here since we only verify Path type=ignore."""
         return True
