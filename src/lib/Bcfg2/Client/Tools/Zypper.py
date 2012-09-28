@@ -183,6 +183,8 @@ class Zypper(Bcfg2.Client.Tools.PkgTool):
         #self.logger.debug("Zypper: vcmp: %s" % vcmp)
         return int(vcmp)
 
+    #rpm -q --queryformat="%{Summary}\n" gpg-pubkey-6144af68-4c58609c
+    #gpg(home:m4z OBS Project <home:m4z@build.opensuse.org>)
     def _handleGPGPubkeyInstances(self, pkg):
         """Make handling of gpg-pubkey packages possible.
 
@@ -247,6 +249,9 @@ class Zypper(Bcfg2.Client.Tools.PkgTool):
         # Force a refresh now, because depending on the zypper configuration,
         # the metadata might be old.
         # TODO: This takes a moment, maybe do not force?
+        # TODO: If the refresh timeouts, it takes 3 minutes * number of repos to
+        # finish. I haven't found zypp or zypper options to shorten this.
+        #   (maybe indirectly via curl options)?
         refreshnow = self.cmd.run("/usr/bin/zypper --quiet --non-interactive "
                                   "refresh --force")
         updates_available = \
@@ -264,18 +269,20 @@ class Zypper(Bcfg2.Client.Tools.PkgTool):
                 try:
                     _, _, pkgname, _, newversionrelease, arch = \
                             update.strip().split('|')
-                except ValueError:
-                    self.logger.info("Zypper: got wrong data")
-                pkgname = pkgname.strip()
-                newversionrelease = newversionrelease.strip()
-                arch = arch.strip()
-                self.available[pkgname] = newversionrelease + '.' + arch
+                    pkgname = pkgname.strip()
+                    newversionrelease = newversionrelease.strip()
+                    arch = arch.strip()
+                    self.available[pkgname] = newversionrelease + '.' + arch
 
-                self.logger.debug("Zypper: Update available for %s: %s -> %s" %
-                                 (pkgname,
-                                  # TODO refactor with entry if possible
-                                  self.__getCurrentVersion(pkgname),
-                                  self.available[pkgname]))
+                    self.logger.debug("Zypper: Update available for %s:"
+                                      " %s -> %s" %
+                                     (pkgname,
+                                      # TODO refactor with entry if possible
+                                      self.__getCurrentVersion(pkgname),
+                                      self.available[pkgname]))
+                except ValueError:
+                    # Might be caused by an error during updat, for example.
+                    self.logger.info("Zypper: got wrong data")
         #self.logger.debug("Zypper: End local Refresh")
 
     def VerifyPackage(self, entry, modlist):
@@ -299,9 +306,12 @@ class Zypper(Bcfg2.Client.Tools.PkgTool):
             s_pubkeys = self._handleGPGPubkeyInstances(entry)
             # let's not duplicate the effort here just for printing early.
             # TODO the client has a list too.
-            self.logger.debug("Zypper: Verify: %s (t:%s), Client has v:%s, "
-                              "Server wants: see below." % (s_pn, s_pt, c_cur))
+            #self.logger.debug("Zypper: Verify: %s (t:%s), Client has v:%s, "
+            #                  "Server wants: see below." % (s_pn, s_pt, c_cur))
             #self.logger.debug("Zypper: Verify: %s" % entry.keys())
+            self.logger.debug("Zypper: Verify: %s (t:%s), Client has v:%s, "
+                              "Server wants: %s." % (s_pn, s_pt, c_cur,
+                                                     s_pubkeys))
         else:
             c_cur = self.__getCurrentVersion(s_pn)
 
@@ -317,6 +327,48 @@ class Zypper(Bcfg2.Client.Tools.PkgTool):
         if s_pn in self.installed:
             # Handle gpg-pubkey packages first
             if s_pn == 'gpg-pubkey':
+                ### # TODO make this smarter, work with only ver-rel
+                ### # if the current key is in the list of wanted keys, accept.
+                ### # self.installed does not work in this case.
+                ### #self.logger.debug("Zypper: Verify: gpg-pubkey: %s" %
+                ### #                  self.installed[s_pn])
+                ### #for c_haskey in self.installed[s_pn]:
+                ### all_keys_correct = False
+                ### for c_haskey in c_cur:
+                ###     self.logger.debug("Zypper: Verify: gpg-pubkey: %s" %
+                ###                      c_haskey)
+                ###     this_key_correct = False
+                ###     for k in s_pubkeys:
+                ###         # format: gpg-pubkey-<version>-<release>.noarch
+                ###         version = k.rsplit('-', 2)[1]
+                ###         release = k.rsplit('-', 2)[2].rsplit('.', 1)[0]
+                ###         arch = k.rsplit('.', 1)[1]
+                ###         if c_haskey == "%s-%s.%s" % (version, release, arch):
+                ###             #self.logger.debug("Zypper: Verify: gpg-pubkey is"
+                ###             #                  " correct version %s-%s.%s " %
+                ###             #                  (version, release, arch))
+                ###             this_key_correct = True
+                ###             # no need to check the remaining keys here.
+                ###             break
+                ###         else:
+                ###             self.logger.debug("Zypper: Verify: (%s-%s.%s)" %
+                ###                           (version, release, arch))
+
+                ###     if not this_key_correct:
+                ###         # TODO the above c/s order might be wrong.
+                ###         # this finds one key as missing, but the client has it
+                ###         # (and the server most likely doesn't)
+                ###         self.logger.debug("Zypper: Verify: gpg-pubkey is"
+                ###                           " missing: %s-%s.%s" %
+                ###                           (version, release, arch))
+                ###         all_keys_correct = False
+
+                ### if all_keys_correct:
+                ###     return True
+                ### else:
+                ###     # if we arrive here, at least one key did not match.
+                ###     return False
+
                 # TODO make this smarter, work with only ver-rel
                 # if the current key is in the list of wanted keys, accept.
                 # self.installed does not work in this case.
@@ -324,39 +376,42 @@ class Zypper(Bcfg2.Client.Tools.PkgTool):
                 #                  self.installed[s_pn])
                 #for c_haskey in self.installed[s_pn]:
                 all_keys_correct = False
-                for c_haskey in c_cur:
-                    self.logger.debug("Zypper: Verify: gpg-pubkey: %s" %
-                                     c_haskey)
+                for k in s_pubkeys:
                     this_key_correct = False
-                    for k in s_pubkeys:
-                        # format: gpg-pubkey-<version>-<release>.noarch
-                        version = k.rsplit('-', 2)[1]
-                        release = k.rsplit('-', 2)[2].rsplit('.', 1)[0]
-                        arch = k.rsplit('.', 1)[1]
+                    # format: gpg-pubkey-<version>-<release>.noarch
+                    version = k.rsplit('-', 2)[1]
+                    release = k.rsplit('-', 2)[2].rsplit('.', 1)[0]
+                    arch = k.rsplit('.', 1)[1]
+                    #self.logger.debug("Zypper: verifying server gpg-pubkey"
+                    #                  " %s-%s.%s" % (version, release, arch))
+                    for c_haskey in c_cur:
+                        #self.logger.debug("Zypper: verifying client key:"
+                        #                  " %s" % c_haskey)
                         if c_haskey == "%s-%s.%s" % (version, release, arch):
-                            #self.logger.debug("Zypper: Verify: gpg-pubkey is"
-                            #                  " correct version %s-%s.%s " %
-                            #                  (version, release, arch))
+                            self.logger.debug("Zypper: Verify: gpg-pubkey is"
+                                              " correct version %s" % c_haskey)
                             this_key_correct = True
                             # no need to check the remaining keys here.
                             break
-                        else:
-                            self.logger.debug("Zypper: Verify: (%s-%s.%s)" %
-                                          (version, release, arch))
+                        #else:
+                        #    self.logger.debug("Zypper: Verify: (%s)" %
+                        #                      c_haskey)
 
                     if not this_key_correct:
-                        # TODO the above c/s order might be wrong.
                         # this finds one key as missing, but the client has it
                         # (and the server most likely doesn't)
+                        all_keys_correct = False
                         self.logger.debug("Zypper: Verify: gpg-pubkey is"
                                           " missing: %s-%s.%s" %
                                           (version, release, arch))
-                        all_keys_correct = False
 
+                # TODO what about extra entries?
                 if all_keys_correct:
+                    self.logger.debug("Zypper: Verify: All keys correct.")
                     return True
                 else:
                     # if we arrive here, at least one key did not match.
+                    self.logger.debug("Zypper: Verify: Something wrong here.")
                     return False
 
 
