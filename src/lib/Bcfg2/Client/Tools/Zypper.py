@@ -1,6 +1,7 @@
 """This provides Bcfg2 support for zypper packages."""
 # TODO: After Install or Remove, the entries are still listed as Incorrect.
 #       Is this what self.modified is used for?
+# TODO: use 'dup' to support distribution upgrades ("vendor changes")?
 
 import Bcfg2.Client.Tools
 
@@ -58,7 +59,7 @@ class Zypper(Bcfg2.Client.Tools.PkgTool):
         self.available = {}
         self.RefreshPackagesLocally()
 
-    def __getCurrentVersion(self, pkg):
+    def _getCurrentVersion(self, pkg):
         """Return version string for currently installed package.
 
            The version of package <pkgname> is returned in the format
@@ -67,15 +68,12 @@ class Zypper(Bcfg2.Client.Tools.PkgTool):
         """
         # gpg-pubkey package with multiple instances (type entry).
         try:
-            #self.logger.debug("Zypper: _cur: %s" %
-            #                  dir(self.installed[pkg.get('name')]))
             try:
                 #self.logger.debug("Zypper: _cur: %s" %
                 #                  self.installed[pkg.get('name')])
                 keys = []
                 for child in self.installed[pkg.get('name')]:
                     #self.logger.debug("Zypper: _cur: %s" % child)
-                    #keys.append("%s-%s.noarch" %
                     keys.append("%s-%s" %
                                 (child.get('version'), child.get('release')))
                 return keys
@@ -89,13 +87,15 @@ class Zypper(Bcfg2.Client.Tools.PkgTool):
                 c_pkgs = []
                 for child in self.installed[pkg]:
                     c_pkgs.append("%s-%s.%s" % (child.get('version'),
-                                                   child.get('release'),
-                                                   child.get('arch')))
+                                                child.get('release'),
+                                                child.get('arch')))
                 return c_pkgs
             except KeyError:
                 return None
 
-    def __getNewestVersion(self, pkgname):
+    # TODO this is very fragile. if, f.e., there's a problem with a single repo,
+    # this function will have a hard time dealing with the zypper output.
+    def _getNewestVersion(self, pkgname):
         """Return version string of the newest available version of package.
 
            The version of package <pkgname> is returned in the format
@@ -107,7 +107,7 @@ class Zypper(Bcfg2.Client.Tools.PkgTool):
                                 pkgname)[1]
         # try to get the current version, might not be installed
         try:
-            currentversion = self.__getCurrentVersion(pkgname).rsplit('.', 1)[0]
+            currentversion = self._getCurrentVersion(pkgname).rsplit('.', 1)[0]
             newestversion = currentversion
         except AttributeError:
             currentversion = '0'
@@ -117,6 +117,12 @@ class Zypper(Bcfg2.Client.Tools.PkgTool):
             # we need to skip the header
             if ver.startswith('S |') or ver.startswith('--+') or len(ver) == 0:
                 pass
+            # skip some common errors, too.
+            elif ver.startswith('File \'/repodata/repomd.xml\' not found') or \
+                     ver.startswith('Problem retrieving files from') or \
+                     ver.startswith('Abort, retry, ignore?') or \
+                     ver.startswith('Warning: Disabling repository'):
+                 pass
             else:
                 # Returns "status | package name | package type | \
                 #          version-release | arch | repository"
@@ -138,14 +144,14 @@ class Zypper(Bcfg2.Client.Tools.PkgTool):
                 # we cannot add the '.arch' suffix yet.
                 thisversion = versionrelease
 
-                vcmp = self.__vcmp(currentversion, thisversion)
+                vcmp = self._vcmp(currentversion, thisversion)
                 if vcmp == -1:
                     #self.logger.debug("Zypper: Newest: Update available for "
                     #                  "%s: %s -> %s" %
                     #                 (pkgname, currentversion, thisversion))
                     # we might find multiple updates, so check if this one is
                     # newer than the newest one we know up to this point.
-                    if self.__vcmp(newestversion, thisversion) == -1:
+                    if self._vcmp(newestversion, thisversion) == -1:
                         #self.logger.debug("Zypper: Newest: Update: %s/%s/%s" %
                         #                  (currentversion,
                         #                  newestversion,
@@ -157,13 +163,21 @@ class Zypper(Bcfg2.Client.Tools.PkgTool):
                     pass
                 else:
                     self.logger.info("Zypper: got wrong data (vcmp).")
+        # TODO: in case of a vendor change, the new package will not be
+        # installable, example:
+        # v | xorg-x11-libs | package | 7.6-37.1.1 | noarch | openSUSE-12.2-Oss
+        # i | xorg-x11-libs | package | 7.6-25.1.2 | i586   | (System Packages)
+        # Zypper: Newest: Returning version xorg-x11-libs-7.6-37.1.1
+        # Zypper: Install package: xorg-x11-libs-7.6-37.1.1.i586
+        # Package 'xorg-x11-libs-7.6-37.1.1.i586' not found.
+        # so TODO: handle vendor changes (with dup?)
         self.logger.debug("Zypper: Newest: Returning version %s-%s" %
                           (pkgname, newestversion))
         # Now it's time to add the suffix.
         # Please note that this will return None in case of gpg-pubkey pkgs.
         return newestversion + '.' + arch
 
-    def __vcmp(self, ver1, ver2):
+    def _vcmp(self, ver1, ver2):
         """Compare package versions.
 
            Returns an integer that is...
@@ -186,8 +200,6 @@ class Zypper(Bcfg2.Client.Tools.PkgTool):
         keys = []
         for child in pkg.getchildren():
             # TODO make this smarter, work with only ver-rel
-            #keys.append("gpg-pubkey-%s-%s.noarch" % (child.get('version'),
-            #                                         child.get('release')))
             keys.append("%s-%s" % (child.get('version'), child.get('release')))
         return keys
 
@@ -264,12 +276,22 @@ class Zypper(Bcfg2.Client.Tools.PkgTool):
                     arch = arch.strip()
                     self.available[pkgname] = newversionrelease + '.' + arch
 
-                    self.logger.debug("Zypper: Update available for %s:"
-                                      " %s -> %s" %
-                                     (pkgname,
-                                      # TODO refactor with entry if possible
-                                      self.__getCurrentVersion(pkgname),
-                                      self.available[pkgname]))
+                    #try:
+                    #    # "normal" packages are returned as arrays.
+                    #    self.logger.debug("Zypper: Update available for %s:"
+                    #                      " %s -> %s" %
+                    #                      (pkgname,
+                    #                       # TODO use entry if possible
+                    #                       self._getCurrentVersion(pkgname)[0],
+                    #                       self.available[pkgname]))
+                    #except TypeError:
+                    #    # gpg-pubkey packages are returned as strings.
+                    #    self.logger.debug("Zypper: Update available for %s:"
+                    #                      " %s -> %s" %
+                    #                      (pkgname,
+                    #                       # TODO use entry if possible
+                    #                       self._getCurrentVersion(pkgname),
+                    #                       self.available[pkgname]))
                 except ValueError:
                     # Might be caused by an error during update, for example.
                     self.logger.info("Zypper: got wrong data")
@@ -290,17 +312,27 @@ class Zypper(Bcfg2.Client.Tools.PkgTool):
         s_pv = entry.get('version')
         # TODO refactor
         if s_pt != 'yum' and s_pn == 'gpg-pubkey':
-            c_cur = self.__getCurrentVersion(entry)
+            c_cur = self._getCurrentVersion(entry)
             s_pubkeys = self._handleGPGPubkeyInstances(entry)
             # let's not duplicate the effort here just for printing early.
             self.logger.debug("Zypper: Verify: %s:%s, Server wants v:%s, "
                               "Client has v:%s." % (s_pt, s_pn, s_pubkeys,
                                                     c_cur))
         else:
-            c_cur = self.__getCurrentVersion(s_pn)
-            self.logger.debug("Zypper: Verify: %s:%s, Server wants v:%s, "
-                              "Client has v:%s.)" % (s_pt, s_pn, s_pv,
-                                                     c_cur[0]))
+            c_cur = self._getCurrentVersion(s_pn)
+            if c_cur is None:
+                # this will happen if the server wants the client to install a
+                # package, but the client does not know that a package exists,
+                # for example because it doesn't have the right repos or
+                # because the plugin developer is doing a distribution upgrade
+                # with an outdated package list.
+                self.logger.debug("Zypper: Verify: Server asked for a package"
+                                  " the Client doesn't know: %s:%s (%s)." %
+                                  (s_pt, s_pn, s_pv))
+            else:
+                self.logger.debug("Zypper: Verify: %s:%s, Server wants v:%s, "
+                                  "Client has v:%s.)" % (s_pt, s_pn, s_pv,
+                                                         c_cur[0]))
 
         # in case of gpg-pubkey packages, it's ok if there is no version yet.
         if not 'version' in entry.attrib and s_pubkeys is None:
@@ -310,16 +342,12 @@ class Zypper(Bcfg2.Client.Tools.PkgTool):
         if s_pn in self.installed:
             # Handle gpg-pubkey packages first
             if s_pn == 'gpg-pubkey':
-                # TODO make this smarter, work with only ver-rel
                 # if the current key is in the list of wanted keys, accept.
                 correct_keys = {}
                 for k in s_pubkeys:
                     # format: <version>-<release>
                     version = k.rsplit('-', 1)[0]
-                    #release = k.rsplit('-', 2)[2].rsplit('.', 1)[0]
                     release = k.rsplit('-', 1)[1]
-                    #arch = k.rsplit('.', 1)[1]
-                    #thiskey = "%s-%s.%s" % (version, release, arch)
                     thiskey = "%s-%s" % (version, release)
                     correct_keys[thiskey] = False
 
@@ -334,9 +362,15 @@ class Zypper(Bcfg2.Client.Tools.PkgTool):
                 # TODO what about extra entries?
                 for key in correct_keys.keys():
                     if correct_keys[key] == False:
-                        #rpm -q --queryformat="%{Summary}\n" gpg-pubkey-6144af68-4c58609c
+                        #rpm -q --queryformat="%{Summary}\n" \
+                        #   gpg-pubkey-6144af68-4c58609c
                         #gpg(home:m4z OBS Project <home:m4z@build.opensuse.org>)
-                        self.logger.debug("Zypper: Verify: Something wrong here.")
+                        keystring = self.cmd.run("/bin/rpm --query "
+                                                 "--queryformat='%%{Summary}\n'"
+                                                 " %s-%s" % (s_pn, key))[1]
+                        #self.logger.debug("Zypper: Verify: Something wrong.")
+                        self.logger.debug("Zypper: Missing %s-%s: %s"
+                                          % (s_pn, key, keystring))
                         return False
                     else:
                         self.logger.debug("Zypper: Verify: All keys correct.")
@@ -353,9 +387,11 @@ class Zypper(Bcfg2.Client.Tools.PkgTool):
             elif s_pv == 'auto':
                 # short-circuit check for updates.
                 if s_pn in self.available:
+                    # we don't need to handle the gpg-pubkey case here, it has
+                    # already been taken care of above.
                     self.logger.debug("Zypper: Verify: update available"
                                       " for %s: %s -> %s" %
-                                      (s_pn, c_cur, self.available[s_pn]))
+                                      (s_pn, c_cur[0], self.available[s_pn]))
                     return False
                 # no direct update found.
                 else:
@@ -366,7 +402,7 @@ class Zypper(Bcfg2.Client.Tools.PkgTool):
                     #       short-circuit workaround to trust the local
                     #       machines' "zypper list-updates".)
                     #
-                    #newest = self.__getNewestVersion(s_pn)
+                    #newest = self._getNewestVersion(s_pn)
                     #if c_cur == newest:
                     #    #self.logger.debug("Zypper: Verify: no update for %s" %
                     #    #                  s_pn)
@@ -378,9 +414,10 @@ class Zypper(Bcfg2.Client.Tools.PkgTool):
                     # Workaround: zypper didn't find any updates above.
                     return True
             else:
-                self.logger.info("  %s: Wrong version installed.  "
-                                 "Want %s, but have %s" %
-                                 (s_pn, entry.get("version"), self.installed[s_pn]))
+                self.logger.info("Zypper: %s: Wrong version installed. "
+                                 "Want %s, but have %s." %
+                                 (s_pn, entry.get("version"),
+                                  self.installed[s_pn]))
                 return False
         else:
             # package is not (yet) installed on the client.
@@ -401,7 +438,11 @@ class Zypper(Bcfg2.Client.Tools.PkgTool):
         # TODO can this fail if no packages were selected?
         for pkg in packages:
             pn = pkg.get('name')
-            pv =  self.__getCurrentVersion(pn)
+            # TODO this can fail, f.e. when a list is returned
+            #try:
+            pv =  self._getCurrentVersion(pn)
+            #except TypeError:
+            #    # ...
             pname = pn + "-" + pv
             if pn == 'gpg-pubkey':
                 # TODO: this is never reached?
@@ -413,22 +454,7 @@ class Zypper(Bcfg2.Client.Tools.PkgTool):
             self.logger.info("Zypper: Removing packages: %s" % rmpkgs_str)
             self.cmd.run("/usr/bin/zypper --non-interactive remove %s" %
                          rmpkgs_str)
-            # TODO doesn't work yet.
-            # Zypper: Begin FindExtraPackages
-            # Zypper: FindExtraPkg: emacs-info
-            # Zypper: FindExtraPkg: gpm
             #
-            # Phase: final
-            # Correct entries:        373
-            # Incorrect entries:      4
-            #  Package:cdrkit-cdrtools-compat  Package:gpg-pubkey  Package:icedax  Package:vorbis-tools
-            # Total managed entries:  377
-            # Unmanaged entries:      17
-            #  Package:ctags       Package:emacs-nox  Service:cron         Service:haveged  Service:network-remotefs  Service:sshd
-            #  Package:emacs       Package:gpm        Service:dbus         Service:kbd      Service:purge-kernels     Service:syslog
-            #  Package:emacs-info  Service:apache2    Service:earlysyslog  Service:network  Service:random
-            #
-            # say:~ #
             # in order to display the correct verify state in state=final, we
             # have to refresh the package list and then recalculate the verify
             # state.
@@ -469,12 +495,15 @@ class Zypper(Bcfg2.Client.Tools.PkgTool):
 
         # TODO: gpg
         for pkg in packages:
-            newver = self.__getNewestVersion(pkg.get('name'))
+            newver = self._getNewestVersion(pkg.get('name'))
             # TODO newver can still be None in case of gpg-pubkey pkgs.
-            # Zypper: Verify: gpg-pubkey (t:rpm), Client has
-            # v:56b4177a-4be18cab.noarch, Server wants v:None)
-            # Cannot verify unversioned package gpg-pubkey
+            # "gpg-pubkey v:56b4177a-4be18cab.noarch, Server wants v:None
+            # TODO this is also very fragile in other cases, like when
+            # _getNewestVersion() fails. make more robust.
+            #try:
             instname = pkg.get('name') + '-' + newver
+            #except TypeError:
+            #    # TODO
             self.logger.info("Zypper: Install package: %s" % instname)
             self.cmd.run("/usr/bin/zypper --non-interactive "
                          "install --no-recommends %s" % instname)
